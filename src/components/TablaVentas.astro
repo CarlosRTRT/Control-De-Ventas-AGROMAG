@@ -1,0 +1,31 @@
+---
+import { crc } from '../lib/db';
+
+interface Props { ventas: any[]; vacio: string }
+const { ventas, vacio } = Astro.props;
+
+const tot: Record<string, number> = {};
+const sumar = (k: string, n: number) => (tot[k] = (tot[k] || 0) + n);
+for (const v of ventas) {
+  const t = v.cantidad * v.precio_unit;
+  sumar('Total', t);
+  sumar(v.metodo === 'sinpe' ? 'SINPE' : 'Tarjeta', t);
+  sumar('👤 ' + v.nombre, t);
+}
+---
+{ventas.length ? (
+  <>
+    <div class="tot">{Object.entries(tot).map(([k, v]) => <div>{k}: <b>{crc(v)}</b></div>)}</div>
+    <div class="wrap"><table>
+      <tr><th>Fecha</th><th>Empleado</th><th>Animal</th><th>Cant.</th><th>Precio</th><th>Total</th><th>Método</th><th>Factura</th></tr>
+      {ventas.map(v => (
+        <tr>
+          <td>{v.fecha.slice(0, 16)}</td><td>{v.nombre}</td><td>{v.tipo}</td><td>{v.cantidad}</td>
+          <td>{crc(v.precio_unit)}</td><td>{crc(v.cantidad * v.precio_unit)}</td>
+          <td>{v.metodo === 'sinpe' ? 'SINPE' : 'Tarjeta'}</td>
+          <td>{v.factura ? <a href={`/factura/${v.factura}`} target="_blank">Ver</a> : '—'}</td>
+        </tr>
+      ))}
+    </table></div>
+  </>
+) : <p>{vacio}</p>}

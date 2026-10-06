@@ -1,0 +1,38 @@
+/* Transiciones de todo el sistema. Se desactivan solas si el equipo pide "reducir movimiento". */
+@media (prefers-reduced-motion: no-preference) {
+  /* 1. Entre vistas: desvanecido rápido, sin movimiento. La barra superior no parpadea. */
+  @view-transition { navigation: auto; }
+  .topbar, .agro-header { view-transition-name: cabecera; }
+  main, .panel, .marca { view-transition-name: contenido; }
+  ::view-transition-group(cabecera) { animation-duration: 0s; }
+  ::view-transition-old(root), ::view-transition-new(root) { animation-duration: .15s; animation-timing-function: ease-out; }
+  ::view-transition-old(contenido) { animation: 90ms ease-out both vt-salir; }
+  ::view-transition-new(contenido) { animation: 170ms ease-out 40ms both vt-entrar; }
+  .orbita { animation: respirar 9s ease-in-out infinite alternate; }
+
+  /* 2. Avisos: aparecen con el mismo desvanecido */
+  .aviso { animation: vt-entrar .2s ease-out both !important; }
+  /* 4. Interacción: todo responde al tacto y al cursor */
+  a, button, .action, .submit, .radio-choice, .dropzone, .field, .select, .number, input, select {
+    transition-property: background-color, border-color, color, box-shadow, transform, opacity;
+    transition-duration: .22s;
+    transition-timing-function: cubic-bezier(.22, .7, .2, 1);
+  }
+  .action:hover { transform: translateY(-1px); }
+  .action:active, .submit:active, button:active { transform: translateY(1px) scale(.985); }
+  .radio-choice:hover, .dropzone:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(29, 42, 36, .08); }
+  .dropzone.encima { transform: scale(1.015); box-shadow: 0 10px 26px rgba(47, 111, 79, .18); }
+  .form-card, .workbench, .people, .sales-empty, .ventas { transition: box-shadow .35s ease, transform .35s ease; }
+  .form-card:hover { box-shadow: 0 22px 54px rgba(29, 42, 36, .1); }
+  .ventas tbody tr, .ventas tr { transition: background-color .2s ease; }
+  .selected-file { animation: vt-entrar .2s ease-out both; }
+  .agro-nav a, .nav-link { transition: background-color .22s ease, color .22s ease; }
+}
+
+@keyframes respirar { from { transform: scale(1); } to { transform: scale(1.06); } }
+@keyframes vt-entrar { from { opacity: 0; } to { opacity: 1; } }
+@keyframes vt-salir { to { opacity: 0; } }
+
+/* Los avisos se cierran solos (ver src/scripts/avisos.ts) */
+.aviso { overflow: hidden; }
+.aviso.saliendo { opacity: 0; max-height: 0 !important; margin-top: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; transition: opacity .3s ease, max-height .4s ease, margin .4s ease, padding .4s ease; }

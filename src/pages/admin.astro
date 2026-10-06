@@ -1,0 +1,327 @@
+---
+import AdminLayout from '../layouts/AdminLayout.astro';
+import { db, crc, VENTAS_SQL } from '../lib/db';
+
+const back = (msg: string, ok = false) => Astro.redirect(`/admin?msg=${encodeURIComponent(msg)}${ok ? '&ok' : ''}`, 303);
+
+if (Astro.request.method === 'POST') {
+  const f = await Astro.request.formData();
+  const accion = f.get('accion');
+
+  if (accion === 'animal' && f.get('eliminar')) {
+    // Se desactiva (no se borra): sus ventas anteriores se conservan en el historial.
+    const a = db.prepare('SELECT tipo FROM animales WHERE id = ?').get(Number(f.get('id'))) as any;
+    db.prepare('UPDATE animales SET activo = 0 WHERE id = ?').run(Number(f.get('id')));
+    return back(a ? `Animal eliminado: ${a.tipo}. Sus ventas se conservan en el historial.` : 'Animal no encontrado', !!a);
+  }
+
+  if (accion === 'animal') {
+    const tipo = String(f.get('tipo') || '').trim(), cantidad = Number(f.get('cantidad')), precio = Number(f.get('precio'));
+    if (!tipo || !Number.isInteger(cantidad) || cantidad < 0 || !Number.isInteger(precio) || precio < 0)
+      return back('Datos inválidos: cantidad y precio deben ser números enteros ≥ 0');
+    try {
+      if (f.get('id')) db.prepare('UPDATE animales SET tipo = ?, cantidad = ?, precio = ? WHERE id = ?').run(tipo, cantidad, precio, Number(f.get('id')));
+      else {
+        const ya = db.prepare('SELECT activo FROM animales WHERE tipo = ?').get(tipo) as any;
+        if (ya?.activo) return back(`Ya existe un animal "${tipo}"`);
+        // Si lo habían eliminado antes, se reactiva con sus datos nuevos.
+        if (ya) db.prepare('UPDATE animales SET tipo = ?, cantidad = ?, precio = ?, activo = 1 WHERE tipo = ?').run(tipo, cantidad, precio, tipo);
+        else db.prepare('INSERT INTO animales (tipo, cantidad, precio) VALUES (?,?,?)').run(tipo, cantidad, precio);
+      }
+    } catch {
+      return back(`Ya existe un animal "${tipo}"`);
+    }
+    return back(`Guardado: ${tipo}`, true);
+  }
+
+  if (accion === 'empleado') {
+    const nombre = String(f.get('nombre') || '').trim();
+    if (!nombre) return back('Escriba el nombre');
+    db.prepare('INSERT INTO empleados (nombre) VALUES (?) ON CONFLICT (nombre) DO UPDATE SET activo = 1').run(nombre);
+    return back(`Empleado agregado: ${nombre}`, true);
+  }
+
+  if (accion === 'cierre') {
+    // Solo cierra las ventas que el dueño tenía en pantalla (id <= hasta), no una que entró justo ahora.
+    const hasta = Number(f.get('hasta'));
+    const r = db.prepare(`SELECT count(*) n, coalesce(sum(cantidad * precio_unit), 0) total FROM ventas
+      WHERE cierre IS NULL AND id <= ?`).get(hasta) as any;
+    if (!r.n) return back('No hay ventas pendientes de cierre');
+    db.prepare(`UPDATE ventas SET cierre = datetime('now','localtime') WHERE cierre IS NULL AND id <= ?`).run(hasta);
+    return back(`Cierre hecho: ${r.n} venta(s), total ${crc(r.total)}. Puede verlas en Historial.`, true);
+  }
+
+  if (accion === 'quitar') {
+    // Se desactiva (no se borra) para conservar su historial de ventas.
+    db.prepare('UPDATE empleados SET activo = 0 WHERE id = ?').run(Number(f.get('id')));
+    return back('Empleado quitado', true);
+  }
+}
+
+const animales = db.prepare('SELECT * FROM animales WHERE activo = 1 ORDER BY tipo').all() as any[];
+const empleados = db.prepare('SELECT * FROM empleados WHERE activo = 1 ORDER BY nombre').all() as any[];
+const ventas = db.prepare(`${VENTAS_SQL} WHERE v.cierre IS NULL ORDER BY v.id DESC`).all() as any[];
+
+let total = 0, sinpe = 0, tarjeta = 0;
+const porEmpleado: Record<string, number> = {};
+for (const v of ventas) {
+  const t = v.cantidad * v.precio_unit;
+  total += t;
+  if (v.metodo === 'sinpe') sinpe += t; else tarjeta += t;
+  porEmpleado[v.nombre] = (porEmpleado[v.nombre] || 0) + t;
+}
+---
+<AdminLayout title="Panel del dueño" activo="panel">
+  <div class="agro-title-row">
+    <div>
+      <h1 class="agro-title">Panel del dueño</h1>
+      <p class="agro-intro">Inventario y equipo, en orden.</p>
+    </div>
+  </div>
+
+  <section aria-labelledby="sales-title" class="sales-empty">
+    <h2 class="sales-empty-title" id="sales-title">Ventas sin cerrar</h2>
+    {ventas.length ? (
+      <>
+        <div class="sales-empty-copy">
+          <p class="resumen">
+            <b>{ventas.length} venta{ventas.length > 1 && 's'}</b> por <b class="total-por-cerrar">{crc(total)}</b>
+            <span class="sep">·</span> SINPE {crc(sinpe)} <span class="sep">·</span> Tarjeta {crc(tarjeta)}
+          </p>
+          <p class="por-empleado">
+            {Object.entries(porEmpleado).map(([n, t], i) => <>{i > 0 && <span class="sep">·</span>}{n} {crc(t)} </>)}
+          </p>
+        </div>
+        <form data-astro-reload method="post" data-confirm={`¿Hacer el cierre de ${ventas.length} venta(s)? Pasarán al historial.`}>
+          <input type="hidden" name="accion" value="cierre" />
+          <input type="hidden" name="hasta" value={ventas[0].id} />
+          <button class="action action-primary"><i aria-hidden="true" class="ti ti-lock"></i>Hacer cierre</button>
+        </form>
+      </>
+    ) : (
+      <>
+        <p class="sales-empty-copy">No hay ventas pendientes. Las ventas cerradas están en Historial.</p>
+        <a class="history-link" href="/admin/historial">Ver Historial <i aria-hidden="true" class="ti ti-arrow-up-right"></i></a>
+      </>
+    )}
+  </section>
+
+  {ventas.length > 0 && (
+    <div class="ventas" role="region" aria-label="Ventas sin cerrar" tabindex="0">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Fecha</th><th scope="col">Empleado</th><th scope="col">Animal</th>
+            <th scope="col" class="num">Cant.</th><th scope="col" class="num">Precio</th><th scope="col" class="num">Total</th>
+            <th scope="col">Método</th><th scope="col">Factura</th>
+          </tr>
+        </thead>
+        <tbody>
+          {ventas.map(v => (
+            <tr>
+              <td class="fecha">{v.fecha.slice(0, 16)}</td>
+              <td>{v.nombre}</td>
+              <td>{v.tipo}</td>
+              <td class="num">{v.cantidad}</td>
+              <td class="num">{crc(v.precio_unit)}</td>
+              <td class="num fuerte">{crc(v.cantidad * v.precio_unit)}</td>
+              <td><span class:list={['metodo', v.metodo]}>{v.metodo === 'sinpe' ? 'SINPE' : 'Tarjeta'}</span></td>
+              <td>{v.factura
+                ? <a class="factura" href={`/factura/${v.factura}`} target="_blank">Ver <i aria-hidden="true" class="ti ti-arrow-up-right"></i></a>
+                : <span class="sin-factura">—</span>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+    <p class="desliza"><i aria-hidden="true" class="ti ti-arrows-horizontal"></i>Desliza la tabla para ver todas las columnas</p>
+  )}
+
+  <div class="workspace">
+    <section aria-labelledby="inventory-title">
+      <div class="inventory-head">
+        <div>
+          <h2 class="inventory-title" id="inventory-title">Inventario y precios</h2>
+          <p class="inventory-sub">Actualiza la cantidad disponible y el precio de cada animal.</p>
+        </div>
+      </div>
+      <div class="workbench">
+        {animales.map(a => (
+          <form data-astro-reload method="post" class="animal-row animal-row-existing">
+            <input type="hidden" name="accion" value="animal" />
+            <input type="hidden" name="id" value={a.id} />
+            <label class="type-field">
+              <span class="field-label">Tipo de animal</span>
+              <input class="field" name="tipo" value={a.tipo} required />
+            </label>
+            <label>
+              <span class="field-label">Cantidad</span>
+              <input class="field" name="cantidad" type="number" min="0" step="1" value={a.cantidad} required />
+            </label>
+            <label>
+              <span class="field-label">Precio ₡</span>
+              <span class="money-wrap">
+                <span class="currency" aria-hidden="true">₡</span>
+                <input class="field" name="precio" type="number" min="0" step="1" value={a.precio} required aria-label="Precio en colones" />
+              </span>
+            </label>
+            <button class="action row-save">Guardar</button>
+            <button class="action eliminar" name="eliminar" value="1" formnovalidate data-confirm={`¿Eliminar ${a.tipo}? Sus ventas anteriores se conservan en el historial.`} aria-label={`Eliminar ${a.tipo}`}><i aria-hidden="true" class="ti ti-trash"></i><span class="txt-el">Eliminar</span></button>
+          </form>
+        ))}
+        <form data-astro-reload method="post" class="add-row">
+          <input type="hidden" name="accion" value="animal" />
+          <h3 class="add-row-title">Agregar animal</h3>
+          <div class="animal-row animal-row-nueva">
+            <label class="type-field">
+              <span class="field-label">Tipo de animal</span>
+              <input class="field" name="tipo" placeholder="Nombre del animal" required />
+            </label>
+            <label>
+              <span class="field-label">Cantidad</span>
+              <input class="field" name="cantidad" type="number" min="0" step="1" placeholder="Cantidad" required />
+            </label>
+            <label>
+              <span class="field-label">Precio ₡</span>
+              <span class="money-wrap">
+                <span class="currency" aria-hidden="true">₡</span>
+                <input class="field" name="precio" type="number" min="0" step="1" placeholder="Precio" required aria-label="Precio en colones" />
+              </span>
+            </label>
+            <button class="action action-primary row-save">Agregar</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section aria-labelledby="people-title" class="people">
+      <h2 class="people-title" id="people-title">Empleados</h2>
+      <p class="people-copy">Personas con acceso al registro de ventas.</p>
+      {empleados.map(e => (
+        <div class="person-row">
+          <div>
+            <span class="person-name">{e.nombre}</span>
+            <p class="person-access">Acceso al registro de ventas</p>
+          </div>
+          <form data-astro-reload method="post" data-confirm={`¿Quitar a ${e.nombre}? Sus ventas registradas se conservarán en el historial.`}>
+            <input type="hidden" name="accion" value="quitar" />
+            <input type="hidden" name="id" value={e.id} />
+            <button class="action remove">Quitar</button>
+          </form>
+        </div>
+      ))}
+      {empleados.length > 0
+        ? <p class="confirm-copy">Al quitar a un empleado, sus ventas registradas se conservarán en el historial.</p>
+        : <p class="confirm-copy">Todavía no hay empleados. Agregue el primero abajo.</p>}
+      <form data-astro-reload method="post" class="employee-add">
+        <input type="hidden" name="accion" value="empleado" />
+        <h3 class="employee-add-title">Agregar empleado</h3>
+        <label>
+          <span class="field-label">Nombre del empleado</span>
+          <input class="field" name="nombre" placeholder="Escribe un nombre" required />
+        </label>
+        <button class="action">Agregar</button>
+      </form>
+    </section>
+  </div>
+</AdminLayout>
+
+<style>
+  .agro-title-row { display: flex; align-items: end; justify-content: space-between; gap: 28px; padding-bottom: 25px; border-bottom: 1px solid var(--line); }
+  .agro-title { margin: 0; font: 600 38px/1.06 'Space Grotesk', sans-serif; letter-spacing: -.055em; }
+  .agro-intro { max-width: 620px; margin: 10px 0 0; color: var(--muted); font-size: 16px; line-height: 1.55; }
+
+  .sales-empty { display: grid; grid-template-columns: 190px minmax(0, 1fr) auto; align-items: center; gap: 22px; margin: 22px 0 35px; padding: 17px 22px; background: var(--soft); border-radius: 3px; }
+  .sales-empty:has(+ .ventas) { margin-bottom: 0; border-radius: 3px 3px 0 0; }
+  .sales-empty form { margin: 0; }
+  .sales-empty-title { margin: 0; font: 600 17px 'Space Grotesk', sans-serif; letter-spacing: -.025em; }
+  .sales-empty-copy { margin: 0; color: #34473b; font-size: 15px; line-height: 1.5; }
+  .sales-empty-copy p { margin: 0; }
+  .total-por-cerrar { font-variant-numeric: tabular-nums; }
+  .sep { margin: 0 4px; color: #8a9a90; }
+  .por-empleado { color: var(--muted); font-size: 13px; }
+  .history-link { display: inline-flex; min-height: 44px; align-items: center; gap: 8px; padding: 0 12px; color: var(--deep); font-size: 14px; font-weight: 700; text-decoration: underline; text-underline-offset: 4px; }
+
+  .ventas { margin: 0 0 35px; background: #fff; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  .ventas table { width: 100%; min-width: 760px; border-collapse: collapse; text-align: left; }
+  .ventas th { padding: 12px 18px; color: var(--muted); font-size: 13px; font-weight: 700; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  .ventas td { padding: 13px 18px; font-size: 15px; border-top: 1px solid #e1e7e2; white-space: nowrap; }
+  .ventas tr:hover td { background: #fbfcfb; }
+  .ventas .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .desliza { display: none; align-items: center; gap: 7px; margin: 8px 0 35px; color: var(--muted); font-size: 13px; }
+  @media (max-width: 760px) { .desliza { display: flex; } }
+  .fecha { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .fuerte { font-weight: 700; }
+  .metodo { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+  .metodo.sinpe { background: #e8f0fb; color: #2b5a99; }
+  .metodo.tarjeta { background: #f1ecf8; color: #634594; }
+  .factura { display: inline-flex; align-items: center; gap: 4px; color: var(--deep); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+  .sin-factura { color: #9aa79f; }
+
+  .workspace { display: grid; grid-template-columns: minmax(0, 1.72fr) minmax(300px, .76fr); gap: 36px; align-items: start; }
+  .inventory-head { display: flex; justify-content: space-between; align-items: end; gap: 20px; padding: 0 0 19px; }
+  .inventory-title { margin: 0; font: 600 29px/1.12 'Space Grotesk', sans-serif; letter-spacing: -.045em; }
+  .inventory-sub { margin: 8px 0 0; color: var(--muted); font-size: 15px; line-height: 1.5; }
+  .workbench { background: #fff; border-top: 2px solid var(--deep); border-bottom: 1px solid var(--line); }
+  .animal-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .7fr) minmax(0, .85fr) 112px; gap: 14px; align-items: end; }
+  .animal-row > * { min-width: 0; }
+  .animal-row-existing { padding: 16px 18px; background: #fbfcfb; border-top: 1px solid #e1e7e2; }
+  .animal-row-existing:first-child { border-top: 0; }
+  .animal-row-existing { grid-template-columns: minmax(0, 1.2fr) minmax(0, .7fr) minmax(0, .85fr) 112px 48px; }
+  .eliminar { padding: 0; width: 48px; color: var(--danger); border-color: #e3c9c4; }
+  .eliminar:hover { background: #fbf1ef; border-color: var(--danger); }
+  .eliminar .ti { font-size: 18px; }
+  .txt-el { display: none; }
+  .animal-row-nueva { padding: 0; background: transparent; }
+  .animal-row label { display: block; }
+  .money-wrap { position: relative; display: block; }
+  .money-wrap .currency { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 15px; font-weight: 600; }
+  .money-wrap .field { padding-left: 31px; }
+  .add-row { padding: 18px; background: var(--warm); border-top: 1px dashed #c6c4b8; }
+  .add-row-title { margin: 0 0 12px; font: 600 16px 'Space Grotesk', sans-serif; color: #2c4034; }
+
+  .people { padding: 24px; background: var(--deep); color: #fff; border-radius: 3px; align-self: stretch; }
+  .people-title { margin: 0; font: 600 28px/1.12 'Space Grotesk', sans-serif; letter-spacing: -.04em; }
+  .people-copy { margin: 8px 0 21px; color: #f0f5f1; font-size: 15px; line-height: 1.5; }
+  .person-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px 0; border-top: 1px solid rgba(255, 255, 255, .25); }
+  .person-row:last-of-type { border-bottom: 1px solid rgba(255, 255, 255, .25); }
+  .person-row form { margin: 0; }
+  .person-name { font: 600 19px 'Space Grotesk', sans-serif; color: #fff; }
+  .person-access { margin: 4px 0 0; color: #eff4f0; font-size: 14px; }
+  .remove { color: var(--danger); border-color: #e3c9c4; background: #fff; }
+  .remove:hover { background: #fbf1ef; border-color: var(--danger); }
+  .confirm-copy { margin: 12px 0 20px; color: #f0f5f1; font-size: 14px; line-height: 1.55; }
+  .employee-add { padding-top: 17px; border-top: 1px solid rgba(255, 255, 255, .25); }
+  .employee-add label { display: block; }
+  .employee-add-title { margin: 0 0 12px; font: 600 18px 'Space Grotesk', sans-serif; color: #fff; }
+  .people .field-label { color: #f0f5f1; }
+  .employee-add .action { margin-top: 12px; background: #f4efe4; border-color: #f4efe4; color: var(--deep); }
+  .employee-add .action:hover { background: #fff; border-color: #fff; }
+
+  @media (max-width: 900px) {
+    .workspace { grid-template-columns: 1fr; gap: 34px; }
+    .sales-empty { grid-template-columns: 155px minmax(0, 1fr); }
+    .history-link, .sales-empty form { grid-column: 2; justify-self: start; }
+    .history-link { margin-left: -12px; }
+  }
+  @media (max-width: 620px) {
+    .agro-title-row { padding-bottom: 20px; }
+    .agro-title { font-size: 32px; }
+    .agro-intro { font-size: 15px; }
+    .sales-empty { grid-template-columns: 1fr; gap: 6px; margin: 17px 0 27px; padding: 16px; }
+    .sales-empty-title { font-size: 16px; }
+    .history-link, .sales-empty form { grid-column: auto; }
+    .history-link { margin: 5px 0 0 -12px; }
+    .sales-empty form { margin-top: 10px; }
+    .inventory-title, .people-title { font-size: 25px; }
+    .animal-row { grid-template-columns: 1fr 1fr; gap: 12px; }
+    .animal-row-existing { padding: 17px 13px; }
+    .animal-row-existing { grid-template-columns: 1fr 1fr; }
+    .animal-row .type-field { grid-column: 1 / -1; }
+    .animal-row-nueva .row-save { grid-column: 1 / -1; width: 100%; }
+    .animal-row-existing .row-save, .animal-row-existing .eliminar { width: 100%; }
+    .eliminar { gap: 8px; padding: 0 15px; }
+    .txt-el { display: inline; }
+    .add-row { padding: 16px 13px; }
+  }
+</style>

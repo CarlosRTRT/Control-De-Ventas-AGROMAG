@@ -1,0 +1,142 @@
+---
+import '../styles/transiciones.css';
+import { ClientRouter } from 'astro:transitions';
+interface Props { title: string; activo: 'panel' | 'historial' }
+const { title, activo } = Astro.props;
+const msg = Astro.url.searchParams.get('msg');
+const ok = Astro.url.searchParams.has('ok');
+---
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>{title} · Agromag Control de Ventas</title>
+    <ClientRouter />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.48.0/dist/tabler-icons.min.css" rel="stylesheet" />
+  </head>
+  <body>
+    <div class="agro-admin">
+      <header class="agro-header">
+        <div class="agro-shell agro-header-inner">
+          <a aria-label="Agromag, Panel del dueño" class="agro-brand" href="/admin">
+            <img alt="Logotipo de Agromag" src="/logo.png" width="48" height="48" />
+            <span>
+              <span class="agro-brand-name">Agromag</span>
+              <span class="agro-brand-sub">Control de Ventas</span>
+            </span>
+          </a>
+          <nav aria-label="Navegación administrativa" class="agro-nav">
+            <a href="/admin" aria-current={activo === 'panel' ? 'page' : undefined}>
+              <span class="nav-icon"><i aria-hidden="true" class="ti ti-layout-dashboard"></i></span>Panel
+            </a>
+            <a href="/admin/historial" aria-current={activo === 'historial' ? 'page' : undefined}>
+              <span class="nav-icon"><i aria-hidden="true" class="ti ti-history"></i></span>Historial
+            </a>
+            <a href="/">
+              <span class="nav-icon"><i aria-hidden="true" class="ti ti-shopping-cart"></i></span><span class="txt-largo">Registrar venta</span><span class="txt-corto">Vender</span>
+            </a>
+            <form data-astro-reload action="/logout" method="post"><button type="submit">Salir</button></form>
+          </nav>
+        </div>
+      </header>
+
+      <main class="agro-shell agro-main">
+        {msg && (
+          <div class:list={['aviso', ok ? 'aviso-ok' : 'aviso-error']} role="status">
+            <i aria-hidden="true" class:list={['ti', ok ? 'ti-circle-check' : 'ti-alert-circle']}></i>
+            <span>{msg}</span>
+          </div>
+        )}
+        <slot />
+        <footer class="admin-footer">
+          <span>Agromag · Control de Ventas</span>
+          <span>{title}</span>
+        </footer>
+      </main>
+    </div>
+    <script>import '../scripts/avisos';</script>
+    <script>
+      document.addEventListener('submit', e => {
+        const f = e.target as HTMLFormElement;
+        const msg = (e as SubmitEvent).submitter?.dataset.confirm ?? f.dataset.confirm;
+        if (msg && !confirm(msg)) e.preventDefault();
+      });
+    </script>
+  </body>
+</html>
+
+<style is:global>
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; }
+  .agro-admin {
+    --green: #2f6f4f; --deep: #214b38; --paper: #f4f6f5; --ink: #1d2a24; --muted: #526258; --soft: #e7eee8;
+    --line: #d4ded7; --warm: #f3efe5; --danger: #9a4c41;
+    font-family: 'DM Sans', system-ui, sans-serif; background: var(--paper); color: var(--ink); min-height: 100vh;
+  }
+  .agro-shell { width: min(1320px, calc(100% - 64px)); margin-inline: auto; }
+  .agro-header { background: var(--green); color: #fff; }
+  .agro-header-inner { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 32px; }
+  .agro-brand { display: flex; align-items: center; gap: 13px; color: #fff; text-decoration: none; }
+  .agro-brand img { width: 48px; height: 48px; object-fit: contain; border-radius: 50%; background: #fff; padding: 4px; }
+  .agro-brand-name { display: block; font: 600 20px/1.1 'Space Grotesk', sans-serif; letter-spacing: -.04em; }
+  .agro-brand-sub { display: block; font-size: 13px; color: rgba(255, 255, 255, .8); margin-top: 4px; }
+  .agro-nav { display: flex; align-items: center; gap: 8px; }
+  .agro-nav a, .agro-nav button {
+    display: inline-flex; min-height: 44px; align-items: center; gap: 9px; padding: 0 15px; border-radius: 8px;
+    color: #fff; text-decoration: none; font: 600 14px 'DM Sans', sans-serif; background: transparent; border: 0; cursor: pointer;
+  }
+  .agro-nav a[aria-current=page] { background: rgba(255, 255, 255, .16); }
+  .agro-nav a:hover, .agro-nav button:hover { background: rgba(255, 255, 255, .1); }
+  .agro-nav form { margin: 0; }
+  .txt-corto { display: none; }
+  .agro-main { padding-top: 38px; padding-bottom: 52px; }
+
+  .aviso { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; padding: 13px 16px; border-radius: 3px; font-size: 15px; font-weight: 600; }
+  .aviso .ti { font-size: 19px; flex: none; }
+  .aviso-ok { background: var(--soft); color: var(--deep); border-left: 3px solid var(--green); }
+  .aviso-error { background: #fbf1ef; color: var(--danger); border-left: 3px solid var(--danger); }
+
+  .field-label { display: block; margin-bottom: 8px; color: #31443a; font-size: 14px; font-weight: 700; }
+  .field {
+    width: 100%; height: 48px; padding: 0 13px; border: 1px solid #bdcbc1; border-radius: 7px; background: #fff;
+    color: var(--ink); font: 500 16px 'DM Sans', sans-serif; outline: none;
+  }
+  .field:focus-visible { border-color: var(--green); box-shadow: 0 0 0 3px rgba(47, 111, 79, .18); }
+  .action {
+    display: inline-flex; min-height: 48px; align-items: center; justify-content: center; gap: 8px; padding: 0 15px;
+    border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--deep);
+    font: 700 14px 'DM Sans', sans-serif; cursor: pointer; text-decoration: none; white-space: nowrap;
+    transition: background .15s, border-color .15s, transform .15s;
+  }
+  .action:hover { background: #f1f5f2; border-color: #829b89; }
+  .action:active { transform: translateY(1px); }
+  .action:focus-visible { outline: 3px solid #a4d6ac; outline-offset: 3px; }
+  .action-primary { background: var(--green); border-color: var(--green); color: #fff; }
+  .action-primary:hover { background: var(--deep); border-color: var(--deep); }
+
+  .admin-footer { display: flex; justify-content: space-between; gap: 20px; margin-top: 42px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+
+  @media (max-width: 900px) {
+    .agro-shell { width: min(100% - 40px, 720px); }
+  }
+  @media (max-width: 620px) {
+    .agro-shell { width: calc(100% - 28px); }
+    .agro-header-inner { min-height: 68px; gap: 10px; }
+    .agro-brand img { width: 40px; height: 40px; }
+    .agro-brand-name { font-size: 17px; }
+    .agro-brand-sub { font-size: 11px; }
+    .agro-nav { gap: 0; }
+    .agro-nav a, .agro-nav button { min-height: 40px; padding: 0 8px; font-size: 12px; }
+    .agro-nav .nav-icon { display: none; }
+    .txt-largo { display: none; }
+    .txt-corto { display: inline; }
+    .agro-main { padding-top: 28px; }
+    .field { height: 50px; }
+    .admin-footer { flex-direction: column; gap: 7px; margin-top: 30px; }
+  }
+</style>

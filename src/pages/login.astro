@@ -1,0 +1,487 @@
+---
+import '../styles/transiciones.css';
+import { ClientRouter } from 'astro:transitions';
+import { db, pinCorrecto } from "../lib/db";
+import { randomBytes } from "node:crypto";
+
+if (Astro.request.method === "POST") {
+  if ((process.env.ADMIN_PIN || "").length < 4)
+    throw new Error(
+      "Falta la variable ADMIN_PIN (mínimo 4 caracteres) en el servidor.",
+    );
+  const pin = String((await Astro.request.formData()).get("pin") || "");
+  if (!pinCorrecto(pin)) {
+    await new Promise((r) => setTimeout(r, 1000)); // frena intentos de adivinar el PIN
+    return Astro.redirect(
+      "/login?msg=" + encodeURIComponent("PIN incorrecto"),
+      303,
+    );
+  }
+  const token = randomBytes(24).toString("hex");
+  db.prepare(`DELETE FROM sesiones WHERE expira <= datetime('now')`).run();
+  db.prepare("INSERT INTO sesiones (token) VALUES (?)").run(token);
+  Astro.cookies.set("s", token, {
+    httpOnly: true,
+    sameSite: "strict",
+    path: "/",
+    maxAge: 43200,
+    secure:
+      Astro.url.protocol === "https:" || process.env.COOKIE_SECURE === "1",
+  });
+  return Astro.redirect("/admin", 303);
+}
+
+const error = Astro.url.searchParams.get("msg");
+---
+
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Administración · Agromag Control de Ventas</title>
+    <ClientRouter />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div class="agm-login">
+      <aside class="marca">
+        <div aria-hidden="true" class="orbita orbita-grande"></div>
+        <div aria-hidden="true" class="orbita orbita-media"></div>
+
+        <div class="marca-logo">
+          <span class="logo"
+            ><img
+              src="/logo.png"
+              alt="Agromag Agroservicio"
+              width="64"
+              height="64"
+            /></span
+          >
+          <span>
+            <span class="display nombre">Agromag</span>
+            <span class="sistema">Control de ventas</span>
+          </span>
+        </div>
+
+        <div class="marca-texto">
+          <p class="etiqueta">
+            <span aria-hidden="true"></span>Espacio del propietario
+          </p>
+          <h1 class="display">Orden para<br />cuidar mejor.</h1>
+          <p class="descripcion">
+            Ventas, inventario y cierres de Agromag en un solo lugar.
+          </p>
+        </div>
+
+        <div class="marca-pie">
+          <span>Clínica veterinaria · Agroservicio</span>
+          <span>La Victoria, Costa Rica</span>
+        </div>
+      </aside>
+
+      <main class="panel">
+        <div class="contenido">
+          <p class="etiqueta-verde">Administración segura</p>
+          <h2 class="display">Bienvenido de nuevo</h2>
+          <p class="instrucciones">
+            Ingresa tu PIN de propietario para administrar las ventas y el
+            inventario.
+          </p>
+
+          <form data-astro-reload method="post" class="formulario">
+            <label for="owner-pin">PIN del dueño</label>
+            <input
+              id="owner-pin"
+              name="pin"
+              type="password"
+              autocomplete="current-password"
+              required
+              autofocus
+              aria-invalid={error ? "true" : undefined}
+              aria-describedby={error ? "pin-error pin-retry" : undefined}
+            />
+            {
+              error && (
+                <>
+                  <div id="pin-error" class="alerta" role="alert">
+                    <span aria-hidden="true" class="display alerta-icono">
+                      !
+                    </span>
+                    <span>{error}</span>
+                  </div>
+                  <p id="pin-retry" class="reintentar">
+                    Revisa el código e inténtalo de nuevo.
+                  </p>
+                </>
+              )
+            }
+            <button type="submit">Entrar al panel</button>
+          </form>
+
+          <p class="reservado">Acceso reservado al propietario de Agromag.</p>
+        </div>
+        <div class="panel-pie">Agromag · Control de ventas</div>
+      </main>
+    </div>
+  </body>
+</html>
+
+<style>
+  :global(html),
+  :global(body) {
+    margin: 0;
+    padding: 0;
+  }
+  * {
+    box-sizing: border-box;
+  }
+  .agm-login {
+    min-height: 100svh;
+    background: #f4f6f5;
+    color: #1d2a24;
+    font-family: "DM Sans", system-ui, sans-serif;
+  }
+  .display {
+    font-family: "Space Grotesk", system-ui, sans-serif;
+  }
+
+  /* Panel de marca */
+  .marca {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    overflow: hidden;
+    min-height: 100svh;
+    color: #f8faf7;
+    background-color: #2f6f4f;
+    background-image: radial-gradient(
+      ellipse at 9% 95%,
+      rgba(237, 244, 235, 0.08) 0 1px,
+      transparent 1.5px
+    );
+    background-size: 18px 18px;
+  }
+  .orbita {
+    position: absolute;
+    border-radius: 50%;
+    border: 1px solid rgba(242, 246, 236, 0.12);
+  }
+  .orbita-grande {
+    right: -112px;
+    top: -80px;
+    width: 440px;
+    height: 440px;
+  }
+  .orbita-media {
+    right: -48px;
+    top: -16px;
+    width: 310px;
+    height: 310px;
+  }
+  .marca-logo {
+    position: relative;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 56px 64px 0;
+  }
+  .logo {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 76px;
+    height: 76px;
+    padding: 8px;
+    border-radius: 50%;
+    background: #fffefa;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  }
+  .logo img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 50%;
+  }
+  .nombre {
+    display: block;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.045em;
+  }
+  .sistema {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.015em;
+    color: rgba(255, 255, 255, 0.75);
+  }
+  .marca-texto {
+    position: relative;
+    z-index: 10;
+    max-width: 530px;
+    padding: 0 64px 8px;
+  }
+  .etiqueta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 20px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: #d8e8d6;
+  }
+  .etiqueta span {
+    width: 32px;
+    height: 1px;
+    background: rgba(216, 232, 214, 0.8);
+  }
+  h1 {
+    max-width: 490px;
+    margin: 0;
+    color: #fff;
+    font-size: clamp(2.6rem, 4.2vw, 4.25rem);
+    font-weight: 500;
+    line-height: 1.06;
+    letter-spacing: -0.065em;
+  }
+  .descripcion {
+    max-width: 390px;
+    margin: 24px 0 0;
+    font-size: 15px;
+    line-height: 1.8;
+    color: rgba(255, 255, 255, 0.78);
+  }
+  .marca-pie {
+    position: relative;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 40px 64px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: rgba(255, 255, 255, 0.55);
+  }
+
+  /* Panel del formulario */
+  .panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 100svh;
+    padding: 48px 28px;
+    background: #f8f9f7;
+  }
+  .contenido {
+    width: 100%;
+    max-width: 440px;
+    margin: 0 auto;
+  }
+  .etiqueta-verde {
+    margin: 0 0 16px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.21em;
+    color: #2f6f4f;
+  }
+  h2 {
+    margin: 0;
+    font-size: 36px;
+    font-weight: 600;
+    line-height: 1.1;
+    letter-spacing: -0.055em;
+    color: #1d2a24;
+  }
+  .instrucciones {
+    max-width: 370px;
+    margin: 12px 0 0;
+    font-size: 14px;
+    line-height: 24px;
+    color: #66736c;
+  }
+  .formulario {
+    margin-top: 36px;
+  }
+  label {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #283a31;
+  }
+  input {
+    width: 100%;
+    height: 54px;
+    padding: 0 16px;
+    border: 1px solid #cbd5ce;
+    border-radius: 8px;
+    background: #fff;
+    font: inherit;
+    font-size: 17px;
+    letter-spacing: 0.32em;
+    color: #1d2a24;
+    box-shadow: 0 1px 2px rgba(29, 42, 36, 0.03);
+  }
+  input:focus {
+    outline: none;
+    border-color: #2f6f4f;
+    box-shadow: 0 0 0 4px rgba(47, 111, 79, 0.13);
+  }
+  .alerta {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-top: 12px;
+    padding: 14px 16px;
+    border: 1px solid #ead7ae;
+    border-radius: 8px;
+    background: #fff8e9;
+    font-size: 13px;
+    line-height: 20px;
+    font-weight: 600;
+    color: #684b20;
+  }
+  .alerta-icono {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    margin-top: 1px;
+    border: 1px solid #c3944c;
+    border-radius: 50%;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .reintentar {
+    margin: 8px 0 0;
+    font-size: 12px;
+    line-height: 20px;
+    color: #68776e;
+  }
+  button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 52px;
+    margin-top: 24px;
+    padding: 0 20px;
+    border: 0;
+    border-radius: 8px;
+    background: #2f6f4f;
+    color: #fff;
+    cursor: pointer;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.015em;
+    box-shadow: 0 5px 14px rgba(47, 111, 79, 0.12);
+    transition:
+      background-color 160ms ease,
+      transform 160ms ease,
+      box-shadow 160ms ease;
+  }
+  button:hover {
+    background: #24583d;
+    box-shadow: 0 10px 22px rgba(47, 111, 79, 0.16);
+    transform: translateY(-1px);
+  }
+  button:active {
+    transform: translateY(0);
+  }
+  button:focus-visible {
+    outline: 2px solid #2f6f4f;
+    outline-offset: 3px;
+  }
+  .reservado {
+    margin: 32px 0 0;
+    padding-top: 20px;
+    border-top: 1px solid #e2e8e3;
+    font-size: 11px;
+    line-height: 20px;
+    color: #859088;
+  }
+  .panel-pie {
+    position: absolute;
+    bottom: 20px;
+    left: 28px;
+    font-size: 10px;
+    letter-spacing: 0.015em;
+    color: #a0aaa3;
+  }
+
+  @media (min-width: 640px) {
+    .panel {
+      padding-left: 48px;
+      padding-right: 48px;
+    }
+    .panel-pie {
+      left: 48px;
+    }
+    h2 {
+      font-size: 42px;
+    }
+  }
+  @media (min-width: 768px) {
+    .agm-login {
+      display: grid;
+      grid-template-columns: 0.94fr 1.06fr;
+    }
+    .panel {
+      padding-left: 64px;
+      padding-right: 64px;
+    }
+    .panel-pie {
+      left: 64px;
+    }
+  }
+  @media (min-width: 1024px) {
+    .panel {
+      padding-left: 96px;
+      padding-right: 96px;
+    }
+    .panel-pie {
+      left: 96px;
+    }
+  }
+  @media (max-width: 767px) {
+    .marca {
+      min-height: 270px;
+    }
+    .marca-logo {
+      padding: 28px 26px 32px;
+    }
+    .marca-texto {
+      margin-top: 0;
+      padding: 0 26px 36px;
+    }
+    .orbita,
+    .marca-pie,
+    .panel-pie {
+      display: none;
+    }
+    .panel {
+      min-height: 540px;
+    }
+  }
+</style>

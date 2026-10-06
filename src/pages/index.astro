@@ -1,0 +1,352 @@
+---
+import '../styles/transiciones.css';
+import { ClientRouter } from 'astro:transitions';
+import fs from 'node:fs';
+import path from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { db, crc, FACTURAS, TIPOS_FACTURA } from '../lib/db';
+
+const back = (msg: string, ok = false) => Astro.redirect(`/?msg=${encodeURIComponent(msg)}${ok ? '&ok' : ''}`, 303);
+
+if (Astro.request.method === 'POST') {
+  const f = await Astro.request.formData();
+  const empleadoId = Number(f.get('empleado')), animalId = Number(f.get('animal'));
+  const cant = Number(f.get('cantidad')), metodo = f.get('metodo');
+  const token = String(f.get('token') || '').slice(0, 64) || null;
+  if (!db.prepare('SELECT 1 FROM empleados WHERE id = ? AND activo = 1').get(empleadoId)) return back('Elija quién hizo la venta');
+  if (!Number.isInteger(cant) || cant < 1) return back('Cantidad inválida');
+  if (metodo !== 'sinpe' && metodo !== 'tarjeta') return back('Elija SINPE o tarjeta');
+  const file = f.get('factura');
+  let factura: string | null = null, datos: Buffer | null = null;
+  if (file instanceof File && file.size) {
+    const ext = TIPOS_FACTURA[file.type];
+    if (!ext) return back('La factura debe ser una imagen (JPG, PNG, WEBP, HEIC) o PDF');
+    factura = randomBytes(12).toString('hex') + '.' + ext;
+    datos = Buffer.from(await file.arrayBuffer());
+  }
+  // Todo síncrono desde aquí: ninguna otra petición se intercala en la transacción.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    // Si el formulario ya se había guardado (respuesta perdida, doble clic, reintento), no se descuenta otra vez.
+    if (token && db.prepare('SELECT 1 FROM ventas WHERE token = ?').get(token)) {
+      db.exec('ROLLBACK');
+      return back('Esta venta ya estaba registrada. No se descontó otra vez.', true);
+    }
+    const a = db.prepare('SELECT * FROM animales WHERE id = ?').get(animalId) as any;
+    const r = a && db.prepare('UPDATE animales SET cantidad = cantidad - ? WHERE id = ? AND cantidad >= ? AND activo = 1').run(cant, animalId, cant);
+    if (!r?.changes) {
+      db.exec('ROLLBACK');
+      return back(`No hay suficientes ${a ? a.tipo : 'animales'} (quedan ${a?.cantidad ?? 0})`);
+    }
+    db.prepare('INSERT INTO ventas (empleado_id, animal_id, cantidad, precio_unit, metodo, factura, token) VALUES (?,?,?,?,?,?,?)')
+      .run(empleadoId, animalId, cant, a.precio, metodo, factura, token);
+    if (factura) fs.writeFileSync(path.join(FACTURAS, factura), datos!);
+    db.exec('COMMIT');
+    return back(`Venta registrada: ${cant} ${a.tipo} — ${crc(cant * a.precio)}`, true);
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+const empleados = db.prepare('SELECT * FROM empleados WHERE activo = 1 ORDER BY nombre').all() as any[];
+const animales = db.prepare('SELECT * FROM animales WHERE cantidad > 0 AND activo = 1 ORDER BY tipo').all() as any[];
+const tokenVenta = randomBytes(16).toString('hex');
+const msg = Astro.url.searchParams.get('msg');
+const ok = Astro.url.searchParams.has('ok');
+---
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Reportar venta · Agromag Control de Ventas</title>
+    <ClientRouter />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.48.0/dist/tabler-icons.min.css" rel="stylesheet" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="topbar">
+        <a aria-label="Agromag, reportar venta" class="brand" href="/">
+          <span class="logo-wrap"><img alt="Logo de Agromag" class="logo" src="/logo.png" width="45" height="45" /></span>
+          <span class="brand-copy">
+            <span class="brand-line"><strong>Agromag</strong> <span>Control de Ventas</span></span>
+            <span class="brand-sub">Reportar venta</span>
+          </span>
+        </a>
+      </header>
+
+      <main class="main">
+        <div class="page-intro">
+          <p class="eyebrow">Registro de inventario</p>
+          <h1>Registrar una venta</h1>
+          <p class="intro-copy">Completa los datos de la venta. La factura es opcional y puedes adjuntarla al final.</p>
+        </div>
+
+        {msg && (
+          <div class:list={['aviso', ok ? 'aviso-ok' : 'aviso-error']} role="alert">
+            <i aria-hidden="true" class:list={['ti', ok ? 'ti-circle-check' : 'ti-alert-circle']}></i>
+            <strong>{msg}</strong>
+          </div>
+        )}
+
+        {!empleados.length ? <p class="vacio">Todavía no hay empleados. El dueño debe agregarlos en Administración.</p>
+        : !animales.length ? <p class="vacio">No hay animales disponibles para vender.</p>
+        : (
+          <form data-astro-reload aria-label="Registrar una venta" class="form-card" enctype="multipart/form-data" method="post" id="venta">
+            <input type="hidden" name="token" value={tokenVenta} />
+            <section aria-label="Datos de la venta" class="fields">
+              <div class="field-grid">
+                <div class="field">
+                  <label class="field-label" for="employee">¿Quién vendió?</label>
+                  <select class="select" id="employee" name="empleado" required>
+                    <option value="">— Elija su nombre —</option>
+                    {empleados.map(e => <option value={e.id}>{e.nombre}</option>)}
+                  </select>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="animal">Animal</label>
+                  <select class="select" id="animal" name="animal" required>
+                    <option value="">— Elija —</option>
+                    {animales.map(a => <option value={a.id} data-stock={a.cantidad}>{a.tipo} — {crc(a.precio)} (quedan {a.cantidad})</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <div class="field quantity-field">
+                <label class="field-label" for="quantity">Cantidad vendida</label>
+                <div class="qty-wrap">
+                  <button type="button" class="qty-btn" data-paso="-1" aria-label="Disminuir cantidad"><i aria-hidden="true" class="ti ti-minus"></i></button>
+                  <input class="number" id="quantity" min="1" name="cantidad" required step="1" type="number" value="1" inputmode="numeric" />
+                  <button type="button" class="qty-btn" data-paso="1" aria-label="Aumentar cantidad"><i aria-hidden="true" class="ti ti-plus"></i></button>
+                  <span class="unit">unidades</span>
+                </div>
+              </div>
+
+              <fieldset>
+                <legend class="group-legend">Método de pago</legend>
+                <div class="radio-row">
+                  <label class="radio-choice"><input name="metodo" required type="radio" value="sinpe" /><span>SINPE</span></label>
+                  <label class="radio-choice"><input name="metodo" type="radio" value="tarjeta" /><span>Tarjeta</span></label>
+                </div>
+              </fieldset>
+            </section>
+
+            <aside aria-label="Adjuntar factura opcional" class="receipt-panel">
+              <div class="receipt-heading">
+                <span>Captura de la factura</span>
+                <span class="optional">Opcional</span>
+              </div>
+              <p class="receipt-copy">Adjunta una imagen o PDF para guardar el comprobante con esta venta.</p>
+              <input accept="image/*,application/pdf" class="file-input" id="invoice" name="factura" type="file" />
+              <label class="dropzone" for="invoice" id="soltar">
+                <i aria-hidden="true" class="ti ti-cloud-upload upload-icon"></i>
+                <span>
+                  <span class="drop-main">Arrastra un archivo aquí o <span class="drop-link">elige uno</span></span>
+                  <span class="drop-hint">Imagen o PDF · máximo 15 MB</span>
+                </span>
+              </label>
+              <div aria-label="Vista previa de archivo seleccionado" class="selected-file" hidden>
+                <div aria-hidden="true" class="preview">
+                  <img alt="" hidden />
+                  <span class="preview-top"></span><span class="preview-line"></span><span class="preview-line"></span><span class="preview-line short"></span>
+                </div>
+                <div class="file-meta">
+                  <div class="file-name"></div>
+                  <div class="file-kind"></div>
+                </div>
+                <button class="remove-file" type="button">Quitar</button>
+              </div>
+              <p class="receipt-note">El archivo es opcional; puedes registrar la venta sin adjuntarlo.</p>
+            </aside>
+
+            <div class="card-footer">
+              <p class="submit-help">Revisa el nombre, animal y cantidad antes de registrar.</p>
+              <button class="submit" type="submit">Registrar venta</button>
+            </div>
+          </form>
+        )}
+
+      </main>
+    </div>
+
+    <script>import '../scripts/avisos';</script>
+    <script>
+      // Soltar una imagen fuera de la zona no debe abrirla y perder el formulario.
+      addEventListener('dragover', e => e.preventDefault());
+      addEventListener('drop', e => e.preventDefault());
+
+      // Con el cambio de vistas el DOM se reemplaza: se inicializa en cada carga.
+      document.addEventListener('astro:page-load', () => {
+      const form = document.querySelector<HTMLFormElement>('#venta');
+      if (form) {
+        const zona = document.getElementById('soltar')!;
+        const input = form.querySelector<HTMLInputElement>('#invoice')!;
+        const sel = form.querySelector<HTMLElement>('.selected-file')!;
+        const img = sel.querySelector('img')!;
+        const animal = form.querySelector<HTMLSelectElement>('#animal')!;
+        const cant = form.querySelector<HTMLInputElement>('#quantity')!;
+
+        // La cantidad no puede pasar de lo que hay del animal elegido.
+        const limitar = () => {
+          const stock = Number(animal.selectedOptions[0]?.dataset.stock);
+          if (stock) { cant.max = String(stock); cant.setCustomValidity(Number(cant.value) > stock ? `Solo quedan ${stock}` : ''); }
+          else { cant.removeAttribute('max'); cant.setCustomValidity(''); }
+        };
+        animal.addEventListener('change', limitar);
+        cant.addEventListener('input', limitar);
+        form.querySelectorAll<HTMLButtonElement>('.qty-btn').forEach(b => b.addEventListener('click', () => {
+          const max = Number(cant.max) || Infinity;
+          const n = Math.floor(Number(cant.value)) || 1;
+          cant.value = String(Math.min(Math.max(1, n + Number(b.dataset.paso)), max));
+          limitar();
+        }));
+
+        const mostrar = () => {
+          const f = input.files?.[0];
+          sel.hidden = !f;
+          if (!f) return;
+          sel.querySelector('.file-name')!.textContent = f.name;
+          const esImg = f.type.startsWith('image/');
+          sel.querySelector('.file-kind')!.textContent = (esImg ? 'Imagen' : 'PDF') + ' · archivo seleccionado';
+          img.hidden = !esImg;
+          sel.querySelectorAll('.preview > span').forEach(s => ((s as HTMLElement).style.display = esImg ? 'none' : ''));
+          if (esImg) img.src = URL.createObjectURL(f);
+        };
+        input.addEventListener('change', mostrar);
+        sel.querySelector('.remove-file')!.addEventListener('click', () => { input.value = ''; mostrar(); });
+
+        zona.addEventListener('dragover', () => zona.classList.add('encima'));
+        zona.addEventListener('dragleave', () => zona.classList.remove('encima'));
+        zona.addEventListener('drop', e => {
+          zona.classList.remove('encima');
+          const archivo = e.dataTransfer?.files[0];
+          if (!archivo) return;
+          const dt = new DataTransfer(); // una factura por venta
+          dt.items.add(archivo);
+          input.files = dt.files;
+          mostrar();
+        });
+      }
+      });
+    </script>
+  </body>
+</html>
+
+<style is:global>
+  :root { --green: #2f6f4f; --green-deep: #24583f; --green-soft: #eaf2ec; --paper: #f4f6f5; --surface: #fff; --ink: #1d2a24; --muted: #67766d; --line: #dce4df; --line-strong: #c5d3ca; --error: #94463d; --error-bg: #fcf0ed; --error-line: #edc9c2; --shadow: 0 16px 42px rgba(29, 42, 36, .075); --body: 'DM Sans', system-ui, sans-serif; --display: 'Space Grotesk', sans-serif; }
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--body); }
+  button, input, select { font: inherit; }
+  .page { min-height: 100vh; min-height: 100dvh; background: var(--paper); }
+  .topbar { height: 82px; display: flex; align-items: center; justify-content: space-between; padding: 0 6.1%; background: var(--green); color: #fff; }
+  .brand { display: flex; align-items: center; gap: 13px; min-width: 0; color: inherit; text-decoration: none; }
+  .logo-wrap { width: 50px; height: 50px; border-radius: 50%; background: #fff; display: grid; place-items: center; flex: none; }
+  .logo { width: 45px; height: 45px; object-fit: contain; border-radius: 50%; }
+  .brand-copy { line-height: 1.2; }
+  .brand-line { font-size: 16px; letter-spacing: -.02em; }
+  .brand-line strong { font-family: var(--display); font-size: 19px; font-weight: 700; letter-spacing: -.045em; }
+  .brand-sub { display: block; margin-top: 3px; color: rgba(255, 255, 255, .76); font-size: 12px; }
+  .main { width: min(1040px, calc(100% - 48px)); margin: 0 auto; padding: 46px 0 28px; }
+  .page-intro { margin: 0 0 24px 3px; }
+  .eyebrow { margin: 0 0 7px; color: var(--green); font-size: 12px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
+  h1 { margin: 0; font-family: var(--display); font-size: clamp(28px, 3vw, 38px); line-height: 1.08; letter-spacing: -.055em; font-weight: 600; color: var(--ink); }
+  .intro-copy { margin: 9px 0 0; color: var(--muted); font-size: 15px; line-height: 1.55; max-width: 57ch; }
+
+  .aviso { display: flex; align-items: center; gap: 10px; margin: 0 0 18px; padding: 13px 16px; border-radius: 10px; font-size: 14px; }
+  .aviso .ti { font-size: 19px; flex: none; }
+  .aviso-ok { background: var(--green-soft); color: var(--green-deep); border: 1px solid #cfe0d5; }
+  .aviso-error { background: var(--error-bg); color: var(--error); border: 1px solid var(--error-line); }
+  .vacio { padding: 28px; text-align: center; color: var(--muted); background: #fff; border: 1px dashed var(--line-strong); border-radius: 14px; }
+
+  .form-card { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(280px, .82fr); background: var(--surface); border: 1px solid rgba(47, 111, 79, .1); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
+  .fields { padding: 29px 34px 30px; }
+  .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 20px; }
+  .field { min-width: 0; }
+  .field-label, .group-legend { display: block; margin: 0 0 8px; color: var(--ink); font-size: 13px; font-weight: 700; line-height: 1.35; }
+  .select, .number { width: 100%; height: 48px; border: 1px solid var(--line-strong); border-radius: 9px; background: #fff; color: var(--ink); padding: 0 14px; font-size: 14px; outline: none; transition: border-color .18s, box-shadow .18s; }
+  .select:focus-visible, .number:focus-visible { border-color: var(--green); box-shadow: 0 0 0 3px rgba(47, 111, 79, .16); }
+  .number:invalid { border-color: var(--error); }
+  .quantity-field { margin-top: 20px; max-width: 400px; }
+  .qty-wrap { display: flex; align-items: center; gap: 10px; }
+  .qty-wrap .number { width: 84px; max-width: 84px; padding: 0 6px; text-align: center; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; -moz-appearance: textfield; appearance: textfield; }
+  .qty-wrap .number::-webkit-inner-spin-button, .qty-wrap .number::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  .qty-btn { width: 44px; height: 44px; flex: none; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; background: #fff; color: var(--green-deep); font-size: 20px; cursor: pointer; transition: background .16s, border-color .16s, color .16s, transform .12s; }
+  .qty-btn:hover { background: var(--green-soft); border-color: var(--green); }
+  .qty-btn:active { transform: scale(.92); background: var(--green); border-color: var(--green); color: #fff; }
+  .qty-btn:focus-visible { outline: 3px solid rgba(47, 111, 79, .25); outline-offset: 2px; }
+  .unit { font-size: 13px; color: var(--muted); }
+  fieldset { min-width: 0; margin: 21px 0 0; padding: 0; border: 0; }
+  legend.group-legend { padding: 0; }
+  .radio-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .radio-choice { position: relative; display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 0 16px; border: 1px solid var(--line-strong); border-radius: 9px; background: #fff; color: var(--ink); font-size: 14px; font-weight: 600; cursor: pointer; transition: background .16s, border-color .16s, box-shadow .16s; }
+  .radio-choice:has(input:checked) { border-color: var(--green); background: var(--green-soft); box-shadow: inset 0 0 0 1px var(--green); color: var(--green-deep); }
+  .radio-choice:focus-within { outline: 3px solid rgba(47, 111, 79, .18); outline-offset: 2px; }
+  .radio-choice input { width: 17px; height: 17px; margin: 0; accent-color: var(--green); }
+
+  .receipt-panel { padding: 30px 28px; background: #f7faf8; border-left: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; position: relative; }
+  .receipt-heading { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--ink); font-size: 14px; font-weight: 700; }
+  .optional { margin-left: auto; padding: 4px 8px; border-radius: 5px; background: #e8efea; color: #5a6e61; font-size: 10px; font-weight: 700; letter-spacing: .02em; }
+  .receipt-copy { margin: 9px 0 18px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .dropzone { display: flex; align-items: flex-start; gap: 12px; padding: 16px 14px; border: 1px dashed #a9bdb0; border-radius: 11px; background: #fff; color: var(--green-deep); text-align: left; cursor: pointer; transition: background .16s, border-color .16s; }
+  .dropzone:hover, .dropzone.encima { border-color: var(--green); background: #f1f7f3; }
+  .upload-icon { font-size: 21px; line-height: 1; flex: none; margin-top: 2px; }
+  .drop-main { display: block; color: var(--ink); font-size: 13px; font-weight: 600; line-height: 1.45; }
+  .drop-link { color: var(--green); text-decoration: underline; text-underline-offset: 3px; }
+  .drop-hint { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+  .file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
+  .file-input:focus-visible + .dropzone { outline: 3px solid rgba(47, 111, 79, .18); outline-offset: 2px; }
+  .selected-file { display: flex; align-items: center; gap: 11px; margin-top: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+  .selected-file[hidden] { display: none; }
+  .preview { width: 44px; height: 50px; flex: none; padding: 8px 6px; border: 1px solid #d8e2db; border-radius: 5px; background: #f8faf8; display: flex; flex-direction: column; gap: 4px; justify-content: flex-start; overflow: hidden; }
+  .preview img { width: 100%; height: 100%; object-fit: cover; margin: -8px -6px; width: 44px; height: 50px; max-width: none; }
+  .preview img[hidden] { display: none; }
+  .preview-top { height: 7px; width: 18px; background: #dceade; border-radius: 2px; }
+  .preview-line { height: 3px; width: 100%; background: #d7ded9; border-radius: 2px; }
+  .preview-line.short { width: 64%; }
+  .file-meta { min-width: 0; flex: 1; }
+  .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 12px; font-weight: 700; }
+  .file-kind { margin-top: 3px; color: var(--muted); font-size: 11px; }
+  .remove-file { min-height: 42px; padding: 0 8px; border: 0; background: transparent; color: var(--error); font-size: 12px; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+  .remove-file:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; border-radius: 4px; }
+  .receipt-note { margin: auto 0 0; padding-top: 18px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+  .card-footer { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 19px 34px; border-top: 1px solid var(--line); background: #fbfcfb; }
+  .submit-help { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+  .submit { min-height: 50px; padding: 0 24px; border: 1px solid var(--green); border-radius: 9px; background: var(--green); color: #fff; font-size: 14px; font-weight: 700; letter-spacing: .01em; cursor: pointer; box-shadow: 0 6px 14px rgba(47, 111, 79, .15); transition: background .16s, transform .16s, box-shadow .16s; }
+  .submit:hover { background: var(--green-deep); box-shadow: 0 8px 16px rgba(47, 111, 79, .2); transform: translateY(-1px); }
+  .submit:active { transform: translateY(0) scale(.99); }
+  .submit:focus-visible { outline: 3px solid rgba(47, 111, 79, .25); outline-offset: 3px; }
+  .footer { display: flex; justify-content: center; padding: 23px 0 0; }
+  .admin-link { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 12px; color: var(--green-deep); font-size: 13px; font-weight: 600; text-decoration: underline; text-underline-offset: 4px; }
+
+  @media (max-width: 760px) {
+    .topbar { height: 72px; padding: 0 18px; }
+    .brand-line > span { display: none; }
+    .topbar { gap: 10px; }
+    .logo-wrap { width: 44px; height: 44px; }
+    .logo { width: 40px; height: 40px; }
+    .main { width: min(100% - 28px, 560px); padding: 28px 0 16px; }
+    .page-intro { margin: 0 0 18px; }
+    .eyebrow { font-size: 11px; }
+    .intro-copy { font-size: 14px; }
+    .form-card { grid-template-columns: 1fr; border-radius: 15px; }
+    .fields { padding: 23px 19px 21px; }
+    .field-grid { grid-template-columns: 1fr; gap: 16px; }
+    .quantity-field { max-width: none; margin-top: 17px; }
+    fieldset { margin-top: 18px; }
+    .radio-row { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+    .radio-choice { min-height: 48px; padding: 0 12px; }
+    .receipt-panel { padding: 20px 19px; background: #f8faf8; border-left: 0; border-top: 1px solid var(--line); }
+    .receipt-copy { margin: 8px 0 14px; }
+    .dropzone { padding: 15px 13px; }
+    .receipt-note { margin-top: 13px; padding-top: 0; }
+    .card-footer { grid-column: 1; padding: 16px 19px 19px; align-items: stretch; flex-direction: column-reverse; gap: 11px; }
+    .submit { width: 100%; min-height: 52px; }
+    .footer { padding-top: 12px; }
+  }
+</style>

@@ -1,0 +1,55 @@
+// Datos en DATA_DIR (por defecto ./data): ventas.db + facturas/. Respalde esa carpeta.
+import fs from 'node:fs';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+
+process.env.TZ ||= 'America/Costa_Rica'; // la VPS suele estar en UTC; fechas de venta en hora local
+const DATA_DIR = path.resolve(process.env.DATA_DIR || 'data');
+export const FACTURAS = path.join(DATA_DIR, 'facturas');
+fs.mkdirSync(FACTURAS, { recursive: true });
+
+export const db = new DatabaseSync(path.join(DATA_DIR, 'ventas.db'));
+db.exec(`
+PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+CREATE TABLE IF NOT EXISTS animales (
+  id INTEGER PRIMARY KEY, tipo TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  cantidad INTEGER NOT NULL CHECK (cantidad >= 0), precio INTEGER NOT NULL CHECK (precio >= 0),
+  activo INTEGER NOT NULL DEFAULT 1); -- 0 = eliminado (se conserva para el historial de ventas)
+CREATE TABLE IF NOT EXISTS empleados (
+  id INTEGER PRIMARY KEY, nombre TEXT NOT NULL UNIQUE COLLATE NOCASE, activo INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS ventas (
+  id INTEGER PRIMARY KEY, fecha TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  empleado_id INTEGER NOT NULL REFERENCES empleados, animal_id INTEGER NOT NULL REFERENCES animales,
+  cantidad INTEGER NOT NULL CHECK (cantidad > 0), precio_unit INTEGER NOT NULL,
+  metodo TEXT NOT NULL CHECK (metodo IN ('sinpe','tarjeta')), factura TEXT,
+  cierre TEXT, -- NULL = venta del día aún sin cerrar
+  token TEXT); -- código único del formulario: evita registrar dos veces la misma venta
+CREATE INDEX IF NOT EXISTS ventas_fecha ON ventas (fecha);
+CREATE TABLE IF NOT EXISTS sesiones (
+  token TEXT PRIMARY KEY, expira TEXT NOT NULL DEFAULT (datetime('now','+12 hours')));
+`);
+// Bases creadas antes de poder eliminar animales
+if (!db.prepare("SELECT 1 FROM pragma_table_info('animales') WHERE name = 'activo'").get())
+  db.exec('ALTER TABLE animales ADD COLUMN activo INTEGER NOT NULL DEFAULT 1');
+if (!db.prepare("SELECT 1 FROM pragma_table_info('ventas') WHERE name = 'token'").get())
+  db.exec('ALTER TABLE ventas ADD COLUMN token TEXT');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ventas_token ON ventas (token)');
+
+// Compara el PIN del dueño en tiempo constante.
+export const pinCorrecto = (pin: string) => {
+  const salt = randomBytes(16);
+  const h = (s: string) => scryptSync(s, salt, 32);
+  return (process.env.ADMIN_PIN || '').length >= 4 && timingSafeEqual(h(pin), h(process.env.ADMIN_PIN!));
+};
+
+export const VENTAS_SQL = `SELECT v.*, a.tipo, e.nombre FROM ventas v
+  JOIN animales a ON a.id = v.animal_id JOIN empleados e ON e.id = v.empleado_id`;
+
+export const crc =(n: number) => '₡' + Number(n).toLocaleString('es-CR');
+export const hoy = () => new Date().toLocaleDateString('sv'); // YYYY-MM-DD local
+export const TIPOS_FACTURA: Record<string, string> = {
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/heic': 'heic', 'application/pdf': 'pdf',
+};
+export const MAX_SUBIDA = 15e6;

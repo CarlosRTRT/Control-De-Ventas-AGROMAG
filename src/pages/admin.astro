@@ -77,6 +77,9 @@ for (const v of ventas) {
       <h1 class="agro-title">Panel del dueño</h1>
       <p class="agro-intro">Inventario y equipo, en orden.</p>
     </div>
+    <button type="button" class="action copiar" data-copiar="/" title="Copia la dirección de la página donde los empleados registran ventas">
+      <i aria-hidden="true" class="ti ti-link"></i><span>Copiar enlace de ventas</span>
+    </button>
   </div>
 
   <section aria-labelledby="sales-title" class="sales-empty">
@@ -226,11 +229,38 @@ for (const v of ventas) {
   </div>
 </AdminLayout>
 
+<script>
+  // Copia el enlace de la página de ventas (usa el dominio con el que se abrió el panel).
+  document.addEventListener('click', async e => {
+    const boton = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-copiar]');
+    if (!boton) return;
+    const enlace = new URL(boton.dataset.copiar!, location.origin).href;
+    try {
+      await navigator.clipboard.writeText(enlace);
+    } catch {
+      const campo = Object.assign(document.createElement('textarea'), { value: enlace });
+      document.body.append(campo);
+      campo.select();
+      const ok = document.execCommand('copy');
+      campo.remove();
+      if (!ok) return void prompt('Copie el enlace:', enlace);
+    }
+    const texto = boton.querySelector('span')!, icono = boton.querySelector('i')!;
+    const [t0, i0] = [texto.textContent, icono.className];
+    texto.textContent = '¡Enlace copiado!';
+    icono.className = 'ti ti-check';
+    boton.classList.add('copiado');
+    setTimeout(() => { texto.textContent = t0; icono.className = i0; boton.classList.remove('copiado'); }, 2000);
+  });
+</script>
+
 <style>
   .agro-title-row { display: flex; align-items: end; justify-content: space-between; gap: 28px; padding-bottom: 25px; border-bottom: 1px solid var(--line); }
   .agro-title { margin: 0; font: 600 38px/1.06 'Space Grotesk', sans-serif; letter-spacing: -.055em; }
   .agro-intro { max-width: 620px; margin: 10px 0 0; color: var(--muted); font-size: 16px; line-height: 1.55; }
 
+  .copiar { flex: none; }
+  .copiar.copiado { background: var(--soft); border-color: var(--green); color: var(--deep); }
   .sales-empty { display: grid; grid-template-columns: 190px minmax(0, 1fr) auto; align-items: center; gap: 22px; margin: 22px 0 35px; padding: 17px 22px; background: var(--soft); border-radius: 3px; }
   .sales-empty:has(+ .ventas) { margin-bottom: 0; border-radius: 3px 3px 0 0; }
   .sales-empty form { margin: 0; }

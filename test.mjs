@@ -88,6 +88,19 @@ try {
   assert.match(await unica(), /Venta registrada/);
   assert.match(await unica(), /ya estaba registrada/);
   assert.equal(Number(await stock()), antes - 1);
+
+  // Sesión del dueño: caduca por inactividad (20 min) y se cierra al abrir la página de ventas
+  const { DatabaseSync } = await import('node:sqlite');
+  const sesiones = new DatabaseSync(path.join(dir, 'ventas.db'));
+  const minutos = () => (Date.parse(sesiones.prepare('select expira from sesiones order by rowid desc limit 1').get().expira.replace(' ', 'T') + 'Z') - Date.now()) / 60000;
+  assert.ok(minutos() > 18 && minutos() <= 20.5, 'la sesión debe durar ~20 min');
+  sesiones.prepare("update sesiones set expira = datetime('now','-1 minute')").run(); // simula 20 min sin usar
+  assert.equal((await fetch(B + '/admin', { headers: { cookie: admin }, redirect: 'manual' })).status, 302);
+  const admin2 = await login('clave123');
+  assert.equal((await fetch(B + '/admin', { headers: { cookie: admin2 } })).status, 200);
+  assert.equal((await fetch(B + '/', { headers: { cookie: admin2 } })).status, 200); // el dueño abre la página de ventas
+  assert.equal((await fetch(B + '/admin', { headers: { cookie: admin2 }, redirect: 'manual' })).status, 302); // ya no entra al panel
+  assert.equal((await fetch(B + '/factura/' + factura.split('/').pop(), { headers: { cookie: admin2 }, redirect: 'manual' })).status, 302);
   console.log('OK');
 } finally {
   srv.kill();

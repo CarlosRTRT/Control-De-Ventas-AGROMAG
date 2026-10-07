@@ -19,7 +19,7 @@ if (Astro.request.method === "POST") {
   }
   const token = randomBytes(24).toString("hex");
   db.prepare(`DELETE FROM sesiones WHERE expira <= datetime('now')`).run();
-  db.prepare("INSERT INTO sesiones (token) VALUES (?)").run(token);
+  db.prepare("INSERT INTO sesiones (token, expira) VALUES (?, datetime('now','+20 minutes'))").run(token);
   Astro.cookies.set("s", token, {
     httpOnly: true,
     sameSite: "strict",

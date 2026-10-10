@@ -2,7 +2,7 @@
 @media (prefers-reduced-motion: no-preference) {
   /* 1. Entre vistas: desvanecido rápido, sin movimiento. La barra superior no parpadea. */
   @view-transition { navigation: auto; }
-  .topbar, .agro-header { view-transition-name: cabecera; }
+  .topbar, .agro-header, .cash-top { view-transition-name: cabecera; }
   main, .panel, .marca { view-transition-name: contenido; }
   ::view-transition-group(cabecera) { animation-duration: 0s; }
   ::view-transition-old(root), ::view-transition-new(root) { animation-duration: .15s; animation-timing-function: ease-out; }

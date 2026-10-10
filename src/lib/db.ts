@@ -43,7 +43,8 @@ if (!db.prepare("SELECT 1 FROM pragma_table_info('animales') WHERE name = 'activ
   db.exec('ALTER TABLE animales ADD COLUMN activo INTEGER NOT NULL DEFAULT 1');
 if (!db.prepare("SELECT 1 FROM pragma_table_info('ventas') WHERE name = 'token'").get())
   db.exec('ALTER TABLE ventas ADD COLUMN token TEXT');
-db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ventas_token ON ventas (token)');
+// Una venta con varios animales deja una fila por animal con el mismo código: por eso el índice ya no es único.
+db.exec('DROP INDEX IF EXISTS ventas_token; CREATE INDEX IF NOT EXISTS ventas_token_idx ON ventas (token)');
 
 // Compara el PIN del dueño en tiempo constante.
 export const pinCorrecto = (pin: string) => {

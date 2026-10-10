@@ -219,6 +219,73 @@ try {
     assert.doesNotMatch(despues, new RegExp(tokenA));
   }
 
+  // Varios animales distintos en una sola venta
+  {
+    const { DatabaseSync: BdMulti } = await import('node:sqlite');
+    const bd = new BdMulti(path.join(dir, 'ventas.db'));
+    await post(admin, '/admin', new URLSearchParams({ accion: 'animal', tipo: 'Conejo', cantidad: '6', precio: '20000' }));
+    await post(admin, '/admin', new URLSearchParams({ accion: 'animal', tipo: 'Hamster', cantidad: '5', precio: '3000' }));
+    const idDe = tipo => bd.prepare('select id from animales where tipo = ?').get(tipo).id;
+    const quedan = tipo => bd.prepare('select cantidad from animales where tipo = ?').get(tipo).cantidad;
+    const conejo = idDe('Conejo'), hamster = idDe('Hamster');
+    const multi = (pares, extra = {}) => {
+      const f = new FormData(); f.append('empleado', '1'); f.append('metodo', 'sinpe');
+      for (const [a, c] of pares) { f.append('animal', String(a)); f.append('cantidad', String(c)); }
+      Object.entries(extra).forEach(([k, v]) => f.append(k, v));
+      return post(emp, '/', f);
+    };
+    const comprobante = token => fetch(B + '/?recibo=' + token, { headers: { cookie: emp } }).then(x => x.text());
+    const hex = 'd'.repeat(31);
+
+    // Dos animales distintos: un solo comprobante con las dos líneas
+    const t1 = hex + '1';
+    assert.match(await multi([[conejo, 2], [hamster, 3]], { token: t1 }), /Venta registrada: 2 Conejo — ₡40.* \+ 3 Hamster/);
+    assert.equal(quedan('Conejo'), 4);
+    assert.equal(quedan('Hamster'), 2);
+    assert.equal(bd.prepare('select count(*) n from ventas where token = ?').get(t1).n, 2);
+    const rc = await comprobante(t1);
+    assert.match(rc, /2 x Conejo/);
+    assert.match(rc, /3 x Hamster/);
+    assert.match(rc, /TOTAL<\/span><span[^>]*>₡49[.,\s  ]000/); // 40 000 + 9 000
+
+    // En el historial de empleados es una sola entrada
+    const hist = await fetch(B + '/?ver=historial', { headers: { cookie: emp } }).then(x => x.text());
+    assert.equal([...hist.matchAll(new RegExp('recibo=' + t1 + '&amp;desde=historial"', 'g'))].length, 1);
+    assert.match(hist, /2 x Conejo/);
+    assert.match(hist, /3 x Hamster/);
+
+    // El mismo animal en dos líneas se suma
+    const antes = quedan('Conejo');
+    assert.match(await multi([[conejo, 1], [conejo, 1]]), /Venta registrada: 2 Conejo/);
+    assert.equal(quedan('Conejo'), antes - 2);
+
+    // Una línea sin animal se ignora aunque traiga cantidad
+    assert.match(await multi([['', 7], [hamster, 1]]), /Venta registrada: 1 Hamster/);
+
+    // Si falta uno de los animales, no se descuenta ninguno
+    const c0 = quedan('Conejo'), h0 = quedan('Hamster');
+    assert.match(await multi([[conejo, 1], [hamster, 999]]), /No hay suficientes Hamster/);
+    assert.equal(quedan('Conejo'), c0);
+    assert.equal(quedan('Hamster'), h0);
+    assert.match(await multi([[conejo, 1], [hamster, 0]]), /Cantidad inválida/);
+    assert.equal(quedan('Conejo'), c0);
+
+    // Reintentar el mismo formulario no duplica nada
+    assert.match(await multi([[conejo, 1], [hamster, 1]], { token: t1 }), /ya estaba registrada/);
+    assert.equal(bd.prepare('select count(*) n from ventas where token = ?').get(t1).n, 2);
+    assert.equal(quedan('Conejo'), c0);
+
+    // Dos animales y grooming, todo en un comprobante
+    const t3 = hex + '3';
+    assert.match(await multi([[conejo, 1], [hamster, 1]], { token: t3, grooming: '1', grooming_monto: '5000' }), /Venta registrada: 1 Conejo.* \+ 1 Hamster.* \+ grooming/);
+    const rc3 = await comprobante(t3);
+    assert.match(rc3, /1 x Conejo/);
+    assert.match(rc3, /1 x Hamster/);
+    assert.match(rc3, /Grooming/);
+    assert.match(rc3, /TOTAL<\/span><span[^>]*>₡28[.,\s  ]000/); // 20 000 + 3 000 + 5 000
+    bd.close();
+  }
+
   // Sesión del dueño: caduca por inactividad (20 min) y se cierra al abrir la página de ventas
   const { DatabaseSync } = await import('node:sqlite');
   const sesiones = new DatabaseSync(path.join(dir, 'ventas.db'));

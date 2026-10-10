@@ -1,6 +1,6 @@
 ---
 import AdminLayout from '../../layouts/AdminLayout.astro';
-import { db, hoy, crc, VENTAS_SQL } from '../../lib/db';
+import { db, hoy, crc, MOVIMIENTOS_SQL } from '../../lib/db';
 
 const q = Astro.url.searchParams.get('dia') || '';
 const dia = /^\d{4}-\d{2}-\d{2}$/.test(q) ? q : hoy();
@@ -9,7 +9,7 @@ const mover = (n: number) => {
   d.setDate(d.getDate() + n);
   return d.toLocaleDateString('sv');
 };
-const ventas = db.prepare(`${VENTAS_SQL} WHERE v.fecha >= ? AND v.fecha < date(?, '+1 day') ORDER BY v.id`).all(dia, dia) as any[];
+const ventas = db.prepare(`${MOVIMIENTOS_SQL} WHERE fecha >= ? AND fecha < date(?, '+1 day') ORDER BY fecha, origen, id`).all(dia, dia) as any[];
 const cierres = [...new Set(ventas.filter(v => v.cierre).map(v => v.cierre.slice(11, 16)))];
 const pendientes = ventas.filter(v => !v.cierre).length;
 const titulo = new Date(dia + 'T12:00:00').toLocaleDateString('es-CR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -77,7 +77,7 @@ for (const v of ventas) {
                 <td class="fecha">{v.fecha.slice(11, 16)}</td>
                 <td>{v.nombre}</td>
                 <td>{v.tipo}</td>
-                <td class="num">{v.cantidad}</td>
+                <td class="num">{v.origen === 's' ? '—' : v.cantidad}</td>
                 <td class="num">{crc(v.precio_unit)}</td>
                 <td class="num fuerte">{crc(v.cantidad * v.precio_unit)}</td>
                 <td><span class:list={['metodo', v.metodo]}>{v.metodo === 'sinpe' ? 'SINPE' : 'Tarjeta'}</span></td>

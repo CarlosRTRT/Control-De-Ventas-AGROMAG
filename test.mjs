@@ -25,18 +25,37 @@ try {
   await post(admin, '/admin', new URLSearchParams({ accion: 'animal', tipo: 'Perro', cantidad: '3', precio: '50000' }));
   await post(admin, '/admin', new URLSearchParams({ accion: 'empleado', nombre: 'Ana' }));
 
-  // Vista de ventas: sin login
-  assert.equal((await fetch(B + '/')).status, 200);
+  // Acceso del equipo: la página de ventas pide el código del local
+  const sinCodigo = await fetch(B + '/', { redirect: 'manual' });
+  assert.equal(sinCodigo.status, 302);
+  assert.match(sinCodigo.headers.get('location'), /\/acceso/);
+  assert.equal((await fetch(B + '/acceso')).status, 200);
+  const codigo = /data-codigo="([A-Z0-9]+)"/.exec(await fetch(B + '/admin', { headers: { cookie: admin } }).then(r => r.text()))[1];
+  assert.match(codigo, /^[A-HJ-NP-Z2-9]{6}$/);
+  const acceso = codigoDado => fetch(B + '/acceso', { method: 'POST', headers: { origin: B }, body: new URLSearchParams({ codigo: codigoDado }), redirect: 'manual' });
+  const equivocado = await acceso('ZZZZZZ');
+  assert.match(decodeURIComponent(equivocado.headers.get('location')), /Código incorrecto/);
+  assert.equal(equivocado.headers.get('set-cookie'), null);
+  const bueno = await acceso(' ' + codigo.toLowerCase() + ' '); // acepta minúsculas y espacios
+  let emp = bueno.headers.get('set-cookie')?.split(';')[0];
+  assert.ok(emp?.startsWith('e='));
+  assert.equal(bueno.headers.get('location'), '/');
+  // Sin el código no se puede registrar, ver el historial ni abrir un comprobante
+  const sinF = new FormData(); Object.entries({ empleado: '1', animal: '1', cantidad: '1', metodo: 'sinpe' }).forEach(([k, v]) => sinF.append(k, v));
+  const intento = await fetch(B + '/', { method: 'POST', headers: { origin: B }, body: sinF, redirect: 'manual' });
+  assert.match(intento.headers.get('location'), /\/acceso/);
+  assert.match((await fetch(B + '/?ver=historial', { redirect: 'manual' })).headers.get('location'), /\/acceso/);
+  assert.equal((await fetch(B + '/', { headers: { cookie: emp } })).status, 200);
+  assert.equal((await fetch(B + '/acceso', { headers: { cookie: emp }, redirect: 'manual' })).status, 302); // ya autorizado: va a ventas
   const venta = (cantidad, extra = {}) => {
     const f = new FormData();
     Object.entries({ empleado: '1', animal: '1', cantidad, metodo: 'sinpe', ...extra }).forEach(([k, v]) => f.append(k, v));
-    return post(null, '/', f);
+    return post(emp, '/', f);
   };
   assert.match(await venta('1', { empleado: '' }), /Elija quién/);
-  assert.match(await venta('2', { factura: new Blob(['x'], { type: 'image/png' }) }), /Venta registrada/);
+  assert.match(await venta('2'), /Venta registrada/);
   assert.match(await venta('2'), /No hay suficientes/); // solo queda 1
   assert.match(await venta('0'), /Cantidad inválida/);
-  assert.match(await venta('1', { factura: new Blob(['<svg>'], { type: 'image/svg+xml' }) }), /debe ser una imagen/);
   assert.match(await venta('1', { metodo: 'tarjeta' }), /Venta registrada/);
 
   await post(admin, '/admin', new URLSearchParams({ accion: 'quitar', id: '1' }));
@@ -46,7 +65,10 @@ try {
   assert.match(html, /total-por-cerrar[^>]*>₡150[.,\s\u00a0\u202f]000/);
   assert.match(html, /<td[^>]*>Ana<\/td>/); // el historial se conserva
   assert.match(html, /name="cantidad"[^>]*value="0"/); // inventario en 0
-  const factura = /href="(\/factura\/[^"]+)"/.exec(html)[1];
+  // Facturas ya guardadas (de antes de quitar la subida): solo las ve el dueño
+  const nombreFactura = 'a'.repeat(24) + '.png';
+  fs.writeFileSync(path.join(dir, 'facturas', nombreFactura), 'x');
+  const factura = '/factura/' + nombreFactura;
   assert.equal((await fetch(B + factura, { redirect: 'manual' })).status, 302); // facturas solo para el dueño
   assert.equal((await fetch(B + factura, { headers: { cookie: admin } })).status, 200);
 
@@ -84,10 +106,118 @@ try {
   const stock = () => fetch(B + '/admin', { headers: { cookie: admin } }).then(r => r.text()).then(h => /name="cantidad"[^>]*value="(\d+)"/.exec(h)[1]);
   await post(admin, '/admin', new URLSearchParams({ accion: 'empleado', nombre: 'Ana' }));
   const antes = Number(await stock());
-  const unica = () => { const f = new FormData(); Object.entries({ token: 'abc123', empleado: '1', animal: '1', cantidad: '1', metodo: 'sinpe' }).forEach(([k, v]) => f.append(k, v)); return post(null, '/', f); };
+  const unica = () => { const f = new FormData(); Object.entries({ token: 'abc123', empleado: '1', animal: '1', cantidad: '1', metodo: 'sinpe' }).forEach(([k, v]) => f.append(k, v)); return post(emp, '/', f); };
   assert.match(await unica(), /Venta registrada/);
   assert.match(await unica(), /ya estaba registrada/);
   assert.equal(Number(await stock()), antes - 1);
+
+  // Grooming: solo, junto con un animal, validaciones, sin duplicados y dentro del cierre
+  {
+    const { DatabaseSync: Db } = await import('node:sqlite');
+    const bd = new Db(path.join(dir, 'ventas.db'));
+    const servicios = () => bd.prepare('select count(*) n from servicios').get().n;
+    const g = campos => { const f = new FormData(); Object.entries({ empleado: '1', metodo: 'tarjeta', ...campos }).forEach(([k, v]) => f.append(k, v)); return post(emp, '/', f); };
+
+    assert.match(await g({ animal: '', grooming: '1', grooming_monto: '8000' }), /Venta registrada: grooming ₡8/);
+    assert.equal(servicios(), 1);
+
+    const inventario = Number(await stock());
+    assert.match(await g({ animal: '1', cantidad: '1', grooming: '1', grooming_monto: '5000' }), /Venta registrada: 1 .* \+ grooming ₡5/);
+    assert.equal(Number(await stock()), inventario - 1);
+    assert.equal(servicios(), 2);
+
+    assert.match(await g({ animal: '' }), /Elija un animal o marque grooming/);
+    assert.match(await g({ animal: '', grooming: '1' }), /cuánto cobró/);
+    assert.match(await g({ animal: '', grooming: '1', grooming_monto: '0' }), /cuánto cobró/);
+    assert.match(await g({ animal: '', grooming: '1', grooming_monto: '12.5' }), /cuánto cobró/);
+    assert.match(await g({ animal: '1', cantidad: '0' }), /Cantidad inválida/);
+    assert.equal(servicios(), 2);
+
+    // Si no alcanza el animal, el grooming de esa misma venta tampoco se guarda
+    assert.match(await g({ animal: '1', cantidad: '9999', grooming: '1', grooming_monto: '7000' }), /No hay suficientes/);
+    assert.equal(servicios(), 2);
+
+    // El mismo formulario enviado dos veces (solo grooming) se registra una sola vez
+    assert.match(await g({ token: 'solo-grooming-1', animal: '', grooming: '1', grooming_monto: '3000' }), /Venta registrada/);
+    assert.match(await g({ token: 'solo-grooming-1', animal: '', grooming: '1', grooming_monto: '3000' }), /ya estaba registrada/);
+    assert.equal(servicios(), 3);
+
+    // Se ve en el panel, suma en los totales y entra al cierre
+    const panelG = await fetch(B + '/admin', { headers: { cookie: admin } }).then(r => r.text());
+    assert.match(panelG, /<td[^>]*>Grooming<\/td>/);
+    const hV = /name="hasta" value="(\d+)"/.exec(panelG)[1], hS = /name="hasta_s" value="(\d+)"/.exec(panelG)[1];
+    assert.match(await post(admin, '/admin', new URLSearchParams({ accion: 'cierre', hasta: hV, hasta_s: hS })), /Cierre hecho: \d+ venta/);
+    assert.equal(bd.prepare('select count(*) n from servicios where cierre is null').get().n, 0);
+    assert.match(await fetch(B + '/admin', { headers: { cookie: admin } }).then(r => r.text()), /No hay ventas pendientes/);
+    const histG = await fetch(B + '/admin/historial', { headers: { cookie: admin } }).then(r => r.text());
+    assert.equal([...histG.matchAll(/<td[^>]*>Grooming<\/td>/g)].length, 3);
+    bd.close();
+  }
+
+  // Después de registrar, la pantalla cambia a la vista previa del comprobante (con Imprimir y Volver)
+  {
+    const hex = 'b'.repeat(31);
+    const venta2 = campos => { const f = new FormData(); Object.entries({ empleado: '1', metodo: 'sinpe', ...campos }).forEach(([k, v]) => f.append(k, v)); return post(emp, '/', f); };
+    const ver = (extra = '') => fetch(B + '/' + extra, { headers: { cookie: emp } }).then(r => r.text());
+
+    // Animal + grooming: la respuesta lleva al comprobante, que se ve sin sesión
+    const tokenA = hex + '1';
+    assert.match(await venta2({ token: tokenA, animal: '1', cantidad: '1', grooming: '1', grooming_monto: '5000' }), new RegExp('recibo=' + tokenA));
+    const prev = await ver('?recibo=' + tokenA);
+    assert.match(prev, /COMPROBANTE DE VENTA/);
+    assert.match(prev, /1 x /);
+    assert.match(prev, /Grooming/);
+    assert.match(prev, /TOTAL<\/span><span[^>]*>₡65[.,\s  ]000/); // 60 000 del animal + 5 000 de grooming
+    assert.match(prev, /SINPE/);
+    assert.match(prev, /Imprimir factura/);
+    assert.match(prev, /<a class="volver"[^>]*href="\/"/);
+    assert.doesNotMatch(prev, /id="venta"/); // el formulario se reemplaza por la vista previa
+
+    // Solo grooming: sin líneas de animal; ancho de rollo elegido
+    const tokenG = hex + '2';
+    assert.match(await venta2({ token: tokenG, animal: '', grooming: '1', grooming_monto: '8000', metodo: 'tarjeta' }), new RegExp('recibo=' + tokenG));
+    const soloG = await ver('?recibo=' + tokenG + '&ancho=58');
+    assert.match(soloG, /Grooming/);
+    assert.doesNotMatch(soloG, /\d x /);
+    assert.match(soloG, /TOTAL<\/span><span[^>]*>₡8[.,\s  ]000/);
+    assert.match(soloG, /Tarjeta/);
+    assert.match(soloG, /size: 58mm auto/);
+
+    // Códigos desconocidos o inválidos: se muestra el formulario normal
+    for (const mal of ['c'.repeat(32), 'abc', '..%2Fetc']) {
+      const h = await ver('?recibo=' + mal);
+      assert.match(h, /id="venta"/);
+      assert.doesNotMatch(h, /COMPROBANTE DE VENTA/);
+    }
+    assert.equal((await fetch(B + '/recibo/' + tokenA, { headers: { cookie: emp } })).status, 404); // ya no hay página aparte
+    assert.match(await ver(), /id="venta"/); // sin código: formulario
+
+    // Historial de ventas para los empleados: ventas sin cerrar, con "Ver factura" e "Imprimir"
+    const hist = await ver('?ver=historial');
+    assert.match(hist, /Ventas desde el último cierre/);
+    assert.match(hist, new RegExp('href="/\\?recibo=' + tokenA + '&amp;desde=historial"'));
+    assert.match(hist, new RegExp('href="/\\?recibo=' + tokenA + '&amp;desde=historial&amp;imprimir=1"'));
+    assert.match(hist, new RegExp('href="/\\?recibo=' + tokenG + '&amp;desde=historial"'));
+    assert.match(hist, /Ver factura/);
+    assert.match(hist, /Imprimir/);
+    assert.equal([...hist.matchAll(/class="entrada"/g)].length >= 2, true);
+    // Animal + grooming de la misma venta salen en UNA sola entrada
+    assert.match(hist, /1 x [^<]* \+ Grooming/);
+    assert.doesNotMatch(hist, /id="venta"/);
+
+    // Desde el historial, "Volver" regresa al historial
+    const desde = await ver('?recibo=' + tokenA + '&desde=historial');
+    assert.match(desde, /<a class="volver"[^>]*href="\/\?ver=historial"/);
+    assert.match(desde, /Historial de ventas/); // sin aviso de "Venta registrada"
+
+    // El cierre del dueño limpia el historial
+    const panelH = await fetch(B + '/admin', { headers: { cookie: admin } }).then(r => r.text());
+    const cierreH = new URLSearchParams({ accion: 'cierre', hasta: /name="hasta" value="(\d+)"/.exec(panelH)[1], hasta_s: /name="hasta_s" value="(\d+)"/.exec(panelH)[1] });
+    assert.match(await post(admin, '/admin', cierreH), /Cierre hecho/);
+    const despues = await ver('?ver=historial');
+    assert.match(despues, /No hay ventas desde el último cierre/);
+    assert.doesNotMatch(despues, new RegExp(tokenA));
+  }
 
   // Sesión del dueño: caduca por inactividad (20 min) y se cierra al abrir la página de ventas
   const { DatabaseSync } = await import('node:sqlite');
@@ -101,6 +231,35 @@ try {
   assert.equal((await fetch(B + '/', { headers: { cookie: admin2 } })).status, 200); // el dueño abre la página de ventas
   assert.equal((await fetch(B + '/admin', { headers: { cookie: admin2 }, redirect: 'manual' })).status, 302); // ya no entra al panel
   assert.equal((await fetch(B + '/factura/' + factura.split('/').pop(), { headers: { cookie: admin2 }, redirect: 'manual' })).status, 302);
+  // El dueño cambia el código: los aparatos autorizados deben escribir el nuevo
+  {
+    const adminX = await login('clave123');
+    const cambio = await post(adminX, '/admin', new URLSearchParams({ accion: 'codigo', codigo: ' miLocal7 ' }));
+    assert.match(cambio, /Código del local: MILOCAL7/);
+    assert.equal((await fetch(B + '/', { headers: { cookie: emp }, redirect: 'manual' })).status, 302); // el aparato anterior ya no entra
+    assert.match(decodeURIComponent((await acceso(codigo)).headers.get('location')), /Código incorrecto/); // el código viejo ya no sirve
+    emp = (await acceso('milocal7')).headers.get('set-cookie').split(';')[0];
+    assert.equal((await fetch(B + '/', { headers: { cookie: emp } })).status, 200);
+    assert.match(await post(adminX, '/admin', new URLSearchParams({ accion: 'codigo', codigo: 'ab' })), /de 4 a 12 letras o números/);
+    assert.match(await post(adminX, '/admin', new URLSearchParams({ accion: 'codigo', codigo: 'con espacio' })), /de 4 a 12 letras o números/);
+    const generado = /Código del local: ([A-Z0-9]+)\./.exec(await post(adminX, '/admin', new URLSearchParams({ accion: 'codigo', generar: '1' })))[1];
+    assert.match(generado, /^[A-HJ-NP-Z2-9]{6}$/);
+    assert.notEqual(generado, 'MILOCAL7');
+
+    // El dueño que abre la página de ventas queda autorizado en ese aparato, sin pedirle el código
+    const admin3 = await login('clave123');
+    const abre = await fetch(B + '/', { headers: { cookie: admin3 }, redirect: 'manual' });
+    assert.equal(abre.status, 200);
+    assert.match(abre.headers.get('set-cookie') ?? '', /(^|, )e=/);
+
+    // Demasiados intentos fallidos: se bloquea esa dirección un rato (aunque acierte después)
+    const desde = ip => fetch(B + '/acceso', { method: 'POST', headers: { origin: B, 'x-forwarded-for': ip }, body: new URLSearchParams({ codigo: 'NOES00' }), redirect: 'manual' });
+    await Promise.all(Array.from({ length: 10 }, () => desde('9.9.9.9')));
+    assert.match(decodeURIComponent((await desde('9.9.9.9')).headers.get('location')), /Demasiados intentos/);
+    const otraIp = await fetch(B + '/acceso', { method: 'POST', headers: { origin: B, 'x-forwarded-for': '8.8.8.8' }, body: new URLSearchParams({ codigo: generado }), redirect: 'manual' });
+    assert.equal(otraIp.headers.get('location'), '/'); // otra dirección no se ve afectada
+  }
+
   console.log('OK');
 } finally {
   srv.kill();

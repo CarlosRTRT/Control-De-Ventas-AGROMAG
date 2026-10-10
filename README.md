@@ -105,6 +105,15 @@ El paso 2 de preparar la VPS **no se repite**. Todos los proyectos comparten el 
 
 Descargue copias a su computadora de vez en cuando: una copia en la misma VPS no protege si la VPS se daña.
 
+## Código del local (acceso de los empleados)
+
+La página de registrar venta, el historial y los comprobantes piden un **código del local**. Los empleados lo escriben **una sola vez en cada celular o computador** (queda autorizado 90 días).
+
+- El dueño ve y cambia el código en el panel, en la sección **Empleados → Código del local**. Al cambiarlo, todos los aparatos deben escribir el nuevo (útil si un empleado se va).
+- El código se crea solo la primera vez que alguien lo necesita. **Después de actualizar, entre al panel para verlo** y compártalo con el equipo.
+- Cuando el dueño abre "Registrar venta" desde el panel, ese aparato queda autorizado sin pedirle el código.
+- Tanto el código como el PIN del dueño se bloquean 10 minutos después de 10 intentos fallidos desde la misma dirección.
+
 ## Variables (`.env`)
 
 | Variable        | Para qué                                                          |

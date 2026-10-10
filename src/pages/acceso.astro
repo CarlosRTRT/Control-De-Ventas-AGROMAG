@@ -1,0 +1,38 @@
+---
+import PantallaAcceso from '../components/PantallaAcceso.astro';
+import { bloqueado, codigoCorrecto, entregarAcceso, ipDe, registrarFallo, tieneAcceso } from '../lib/acceso';
+
+const volver = (msg: string) => Astro.redirect('/acceso?msg=' + encodeURIComponent(msg), 303);
+
+if (Astro.request.method === 'POST') {
+  const ip = ipDe(Astro.request, Astro.clientAddress);
+  if (bloqueado(ip)) return volver('Demasiados intentos. Espere unos minutos.');
+  const codigo = String((await Astro.request.formData()).get('codigo') || '');
+  if (!codigoCorrecto(codigo)) {
+    registrarFallo(ip);
+    await new Promise(r => setTimeout(r, 1000)); // frena intentos de adivinar el código
+    return volver('Código incorrecto');
+  }
+  entregarAcceso(Astro.cookies, Astro.url);
+  return Astro.redirect('/', 303);
+}
+
+if (tieneAcceso(Astro.cookies.get('e')?.value)) return Astro.redirect('/');
+const error = Astro.url.searchParams.get('msg');
+---
+
+<PantallaAcceso
+  titulo="Acceso del equipo"
+  eyebrow="Equipo Agromag"
+  titular={['Cada venta,', 'bien registrada.']}
+  descripcion="Registre y consulte las ventas de Agromag en un solo lugar."
+  etiquetaVerde="Acceso del equipo"
+  saludo="Escriba el código"
+  instrucciones="Pídale el código del local al dueño. Solo se escribe una vez en este aparato."
+  campo="Código del local"
+  nombreCampo="codigo"
+  tipo="text"
+  boton="Entrar"
+  nota="Si no tiene el código, consulte con el dueño."
+  error={error}
+/>

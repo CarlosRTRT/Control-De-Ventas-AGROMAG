@@ -27,6 +27,14 @@ CREATE TABLE IF NOT EXISTS ventas (
   cierre TEXT, -- NULL = venta del día aún sin cerrar
   token TEXT); -- código único del formulario: evita registrar dos veces la misma venta
 CREATE INDEX IF NOT EXISTS ventas_fecha ON ventas (fecha);
+CREATE TABLE IF NOT EXISTS servicios ( -- grooming: lo que el empleado cobró, sin inventario
+  id INTEGER PRIMARY KEY, fecha TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  empleado_id INTEGER NOT NULL REFERENCES empleados, monto INTEGER NOT NULL CHECK (monto > 0),
+  metodo TEXT NOT NULL CHECK (metodo IN ('sinpe','tarjeta')), cierre TEXT, token TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS servicios_token ON servicios (token);
+CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS accesos ( -- aparatos de empleados autorizados con el código del local
+  token TEXT PRIMARY KEY, expira TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sesiones (
   token TEXT PRIMARY KEY, expira TEXT NOT NULL DEFAULT (datetime('now','+12 hours')));
 `);
@@ -44,8 +52,14 @@ export const pinCorrecto = (pin: string) => {
   return (process.env.ADMIN_PIN || '').length >= 4 && timingSafeEqual(h(pin), h(process.env.ADMIN_PIN!));
 };
 
-export const VENTAS_SQL = `SELECT v.*, a.tipo, e.nombre FROM ventas v
-  JOIN animales a ON a.id = v.animal_id JOIN empleados e ON e.id = v.empleado_id`;
+// Ventas de animales y servicios (grooming) en una sola lista, con las mismas columnas.
+export const MOVIMIENTOS_SQL = `SELECT * FROM (
+  SELECT 'v' AS origen, v.id, v.fecha, v.cantidad, v.precio_unit, v.metodo, v.factura, v.cierre, a.tipo, e.nombre
+    FROM ventas v JOIN animales a ON a.id = v.animal_id JOIN empleados e ON e.id = v.empleado_id
+  UNION ALL
+  SELECT 's', s.id, s.fecha, 1, s.monto, s.metodo, NULL, s.cierre, 'Grooming', e.nombre
+    FROM servicios s JOIN empleados e ON e.id = s.empleado_id
+)`;
 
 export const crc =(n: number) => '₡' + Number(n).toLocaleString('es-CR');
 export const hoy = () => new Date().toLocaleDateString('sv'); // YYYY-MM-DD local
@@ -53,3 +67,4 @@ export const TIPOS_FACTURA: Record<string, string> = {
   'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/heic': 'heic', 'application/pdf': 'pdf',
 };
 export const MAX_SUBIDA = 15e6;
+export const TOKEN_RE = /^[a-f0-9]{32}$/; // código de cada formulario de venta (también identifica su comprobante)

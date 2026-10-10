@@ -1,6 +1,7 @@
 ---
 import AdminLayout from '../layouts/AdminLayout.astro';
-import { db, crc, VENTAS_SQL } from '../lib/db';
+import { db, crc, MOVIMIENTOS_SQL } from '../lib/db';
+import { cambiarCodigo, codigoLocal, nuevoCodigo } from '../lib/acceso';
 
 const back = (msg: string, ok = false) => Astro.redirect(`/admin?msg=${encodeURIComponent(msg)}${ok ? '&ok' : ''}`, 303);
 
@@ -34,6 +35,13 @@ if (Astro.request.method === 'POST') {
     return back(`Guardado: ${tipo}`, true);
   }
 
+  if (accion === 'codigo') {
+    const nuevo = f.get('generar') ? nuevoCodigo() : String(f.get('codigo') || '').trim().toUpperCase();
+    if (!/^[A-Z0-9]{4,12}$/.test(nuevo)) return back('El código debe tener de 4 a 12 letras o números, sin espacios');
+    cambiarCodigo(nuevo);
+    return back(`Código del local: ${nuevo}. Los empleados deben escribirlo otra vez en cada aparato.`, true);
+  }
+
   if (accion === 'empleado') {
     const nombre = String(f.get('nombre') || '').trim();
     if (!nombre) return back('Escriba el nombre');
@@ -42,13 +50,15 @@ if (Astro.request.method === 'POST') {
   }
 
   if (accion === 'cierre') {
-    // Solo cierra las ventas que el dueño tenía en pantalla (id <= hasta), no una que entró justo ahora.
-    const hasta = Number(f.get('hasta'));
-    const r = db.prepare(`SELECT count(*) n, coalesce(sum(cantidad * precio_unit), 0) total FROM ventas
-      WHERE cierre IS NULL AND id <= ?`).get(hasta) as any;
-    if (!r.n) return back('No hay ventas pendientes de cierre');
+    // Solo cierra lo que el dueño tenía en pantalla (id <= hasta), no una venta que entró justo ahora.
+    const hasta = Number(f.get('hasta')) || 0, hastaS = Number(f.get('hasta_s')) || 0;
+    const pendiente = (tabla: string, tope: number, importe: string) => db.prepare(`SELECT count(*) n, coalesce(sum(${importe}), 0) total
+      FROM ${tabla} WHERE cierre IS NULL AND id <= ?`).get(tope) as any;
+    const v = pendiente('ventas', hasta, 'cantidad * precio_unit'), s = pendiente('servicios', hastaS, 'monto');
+    if (!v.n && !s.n) return back('No hay ventas pendientes de cierre');
     db.prepare(`UPDATE ventas SET cierre = datetime('now','localtime') WHERE cierre IS NULL AND id <= ?`).run(hasta);
-    return back(`Cierre hecho: ${r.n} venta(s), total ${crc(r.total)}. Puede verlas en Historial.`, true);
+    db.prepare(`UPDATE servicios SET cierre = datetime('now','localtime') WHERE cierre IS NULL AND id <= ?`).run(hastaS);
+    return back(`Cierre hecho: ${v.n + s.n} venta(s), total ${crc(v.total + s.total)}. Puede verlas en Historial.`, true);
   }
 
   if (accion === 'quitar') {
@@ -60,7 +70,9 @@ if (Astro.request.method === 'POST') {
 
 const animales = db.prepare('SELECT * FROM animales WHERE activo = 1 ORDER BY tipo').all() as any[];
 const empleados = db.prepare('SELECT * FROM empleados WHERE activo = 1 ORDER BY nombre').all() as any[];
-const ventas = db.prepare(`${VENTAS_SQL} WHERE v.cierre IS NULL ORDER BY v.id DESC`).all() as any[];
+const ventas = db.prepare(`${MOVIMIENTOS_SQL} WHERE cierre IS NULL ORDER BY fecha DESC, origen, id DESC`).all() as any[];
+const codigo = codigoLocal();
+const ultimo = (origen: string) => Math.max(0, ...ventas.filter(v => v.origen === origen).map(v => v.id));
 
 let total = 0, sinpe = 0, tarjeta = 0;
 const porEmpleado: Record<string, number> = {};
@@ -97,7 +109,8 @@ for (const v of ventas) {
         </div>
         <form data-astro-reload method="post" data-confirm={`¿Hacer el cierre de ${ventas.length} venta(s)? Pasarán al historial.`}>
           <input type="hidden" name="accion" value="cierre" />
-          <input type="hidden" name="hasta" value={ventas[0].id} />
+          <input type="hidden" name="hasta" value={ultimo('v')} />
+          <input type="hidden" name="hasta_s" value={ultimo('s')} />
           <button class="action action-primary"><i aria-hidden="true" class="ti ti-lock"></i>Hacer cierre</button>
         </form>
       </>
@@ -125,7 +138,7 @@ for (const v of ventas) {
               <td class="fecha">{v.fecha.slice(0, 16)}</td>
               <td>{v.nombre}</td>
               <td>{v.tipo}</td>
-              <td class="num">{v.cantidad}</td>
+              <td class="num">{v.origen === 's' ? '—' : v.cantidad}</td>
               <td class="num">{crc(v.precio_unit)}</td>
               <td class="num fuerte">{crc(v.cantidad * v.precio_unit)}</td>
               <td><span class:list={['metodo', v.metodo]}>{v.metodo === 'sinpe' ? 'SINPE' : 'Tarjeta'}</span></td>
@@ -225,6 +238,20 @@ for (const v of ventas) {
         </label>
         <button class="action">Agregar</button>
       </form>
+
+      <div class="codigo-local">
+        <h3 class="employee-add-title">Código del local</h3>
+        <p class="codigo-copia">Los empleados lo escriben una sola vez en cada celular o computador para registrar ventas.</p>
+        <p class="codigo-actual" data-codigo={codigo} aria-label="Código actual">{codigo}</p>
+        <form data-astro-reload method="post" class="codigo-form" data-confirm="¿Cambiar el código? Todos los empleados tendrán que escribir el nuevo.">
+          <input type="hidden" name="accion" value="codigo" />
+          <input class="field" name="codigo" placeholder="Código nuevo" maxlength="12" autocapitalize="characters" autocomplete="off" aria-label="Código nuevo" />
+          <div class="codigo-botones">
+            <button class="action">Cambiar</button>
+            <button class="action" name="generar" value="1" formnovalidate>Generar uno nuevo</button>
+          </div>
+        </form>
+      </div>
     </section>
   </div>
 </AdminLayout>
@@ -325,6 +352,13 @@ for (const v of ventas) {
   .employee-add label { display: block; }
   .employee-add-title { margin: 0 0 12px; font: 600 18px 'Space Grotesk', sans-serif; color: #fff; }
   .people .field-label { color: #f0f5f1; }
+  .codigo-local { margin-top: 22px; padding-top: 18px; border-top: 1px solid rgba(255, 255, 255, .25); }
+  .codigo-copia { margin: 0 0 12px; color: #f0f5f1; font-size: 14px; line-height: 1.5; }
+  .codigo-actual { margin: 0 0 14px; padding: 12px 14px; background: rgba(255, 255, 255, .1); border: 1px dashed rgba(255, 255, 255, .45); border-radius: 8px; text-align: center; font: 700 28px/1 'Space Grotesk', monospace; letter-spacing: .28em; color: #fff; user-select: all; }
+  .codigo-form { display: grid; gap: 10px; }
+  .codigo-botones { display: flex; gap: 10px; flex-wrap: wrap; }
+  .codigo-botones .action { flex: 1; background: #f4efe4; border-color: #f4efe4; color: var(--deep); }
+  .codigo-botones .action:hover { background: #fff; border-color: #fff; }
   .employee-add .action { margin-top: 12px; background: #f4efe4; border-color: #f4efe4; color: var(--deep); }
   .employee-add .action:hover { background: #fff; border-color: #fff; }
 
@@ -335,7 +369,8 @@ for (const v of ventas) {
     .history-link { margin-left: -12px; }
   }
   @media (max-width: 620px) {
-    .agro-title-row { padding-bottom: 20px; }
+    .agro-title-row { padding-bottom: 20px; flex-wrap: wrap; }
+    .copiar { width: 100%; }
     .agro-title { font-size: 32px; }
     .agro-intro { font-size: 15px; }
     .sales-empty { grid-template-columns: 1fr; gap: 6px; margin: 17px 0 27px; padding: 16px; }

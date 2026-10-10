@@ -24,7 +24,7 @@ const ok = Astro.url.searchParams.has('ok');
       <header class="agro-header">
         <div class="agro-shell agro-header-inner">
           <a aria-label="Agromag, Panel del dueño" class="agro-brand" href="/admin">
-            <img alt="Logotipo de Agromag" src="/logo.png" width="48" height="48" />
+            <img alt="Logotipo de Agromag" src="/logo.png" width="80" height="80" />
             <span>
               <span class="agro-brand-name">Agromag</span>
               <span class="agro-brand-sub">Control de Ventas</span>
@@ -80,11 +80,11 @@ const ok = Astro.url.searchParams.has('ok');
   }
   .agro-shell { width: min(1320px, calc(100% - 64px)); margin-inline: auto; }
   .agro-header { background: var(--green); color: #fff; }
-  .agro-header-inner { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 32px; }
-  .agro-brand { display: flex; align-items: center; gap: 13px; color: #fff; text-decoration: none; }
-  .agro-brand img { width: 48px; height: 48px; object-fit: contain; border-radius: 50%; background: #fff; padding: 4px; }
-  .agro-brand-name { display: block; font: 600 20px/1.1 'Space Grotesk', sans-serif; letter-spacing: -.04em; }
-  .agro-brand-sub { display: block; font-size: 13px; color: rgba(255, 255, 255, .8); margin-top: 4px; }
+  .agro-header-inner { min-height: 108px; display: flex; align-items: center; justify-content: space-between; gap: 32px; }
+  .agro-brand { display: flex; align-items: center; gap: 18px; color: #fff; text-decoration: none; }
+  .agro-brand img { width: 80px; height: 80px; object-fit: contain; border-radius: 50%; background: #fff; padding: 5px; box-shadow: 0 6px 20px rgba(0, 0, 0, .18); }
+  .agro-brand-name { display: block; font: 600 26px/1.1 'Space Grotesk', sans-serif; letter-spacing: -.04em; }
+  .agro-brand-sub { display: block; font-size: 14px; color: rgba(255, 255, 255, .8); margin-top: 4px; }
   .agro-nav { display: flex; align-items: center; gap: 8px; }
   .agro-nav a, .agro-nav button {
     display: inline-flex; min-height: 44px; align-items: center; gap: 9px; padding: 0 15px; border-radius: 8px;
@@ -126,9 +126,10 @@ const ok = Astro.url.searchParams.has('ok');
   }
   @media (max-width: 620px) {
     .agro-shell { width: calc(100% - 28px); }
-    .agro-header-inner { min-height: 68px; gap: 10px; }
-    .agro-brand img { width: 40px; height: 40px; }
-    .agro-brand-name { font-size: 17px; }
+    .agro-header-inner { min-height: 88px; gap: 10px; }
+    .agro-brand img { width: 62px; height: 62px; }
+    .agro-brand { gap: 12px; }
+    .agro-brand-name { font-size: 20px; }
     .agro-brand-sub { font-size: 11px; }
     .agro-nav { gap: 0; }
     .agro-nav a, .agro-nav button { min-height: 40px; padding: 0 8px; font-size: 12px; }

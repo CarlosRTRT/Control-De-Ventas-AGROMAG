@@ -1,48 +1,51 @@
 ---
 import '../styles/transiciones.css';
 import { ClientRouter } from 'astro:transitions';
-import fs from 'node:fs';
-import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { db, crc, FACTURAS, TIPOS_FACTURA } from '../lib/db';
+import { db, crc, TOKEN_RE } from '../lib/db';
+import { negocio } from '../lib/negocio';
 
-const back = (msg: string, ok = false) => Astro.redirect(`/?msg=${encodeURIComponent(msg)}${ok ? '&ok' : ''}`, 303);
+const back = (msg: string, ok = false, recibo = '') => Astro.redirect(`/?msg=${encodeURIComponent(msg)}${ok ? '&ok' : ''}${recibo ? '&recibo=' + recibo : ''}`, 303);
 
 if (Astro.request.method === 'POST') {
   const f = await Astro.request.formData();
-  const empleadoId = Number(f.get('empleado')), animalId = Number(f.get('animal'));
+  const empleadoId = Number(f.get('empleado')), animalId = Number(f.get('animal')) || 0;
   const cant = Number(f.get('cantidad')), metodo = f.get('metodo');
+  const grooming = f.get('grooming') === '1', monto = grooming ? Number(f.get('grooming_monto')) : 0;
   const token = String(f.get('token') || '').slice(0, 64) || null;
   if (!db.prepare('SELECT 1 FROM empleados WHERE id = ? AND activo = 1').get(empleadoId)) return back('Elija quién hizo la venta');
-  if (!Number.isInteger(cant) || cant < 1) return back('Cantidad inválida');
+  if (!animalId && !grooming) return back('Elija un animal o marque grooming');
+  if (animalId && (!Number.isInteger(cant) || cant < 1)) return back('Cantidad inválida');
+  if (grooming && (!Number.isInteger(monto) || monto < 1)) return back('Escriba cuánto cobró por el grooming');
   if (metodo !== 'sinpe' && metodo !== 'tarjeta') return back('Elija SINPE o tarjeta');
-  const file = f.get('factura');
-  let factura: string | null = null, datos: Buffer | null = null;
-  if (file instanceof File && file.size) {
-    const ext = TIPOS_FACTURA[file.type];
-    if (!ext) return back('La factura debe ser una imagen (JPG, PNG, WEBP, HEIC) o PDF');
-    factura = randomBytes(12).toString('hex') + '.' + ext;
-    datos = Buffer.from(await file.arrayBuffer());
-  }
   // Todo síncrono desde aquí: ninguna otra petición se intercala en la transacción.
   db.exec('BEGIN IMMEDIATE');
   try {
     // Si el formulario ya se había guardado (respuesta perdida, doble clic, reintento), no se descuenta otra vez.
-    if (token && db.prepare('SELECT 1 FROM ventas WHERE token = ?').get(token)) {
+    if (token && (db.prepare('SELECT 1 FROM ventas WHERE token = ?').get(token) || db.prepare('SELECT 1 FROM servicios WHERE token = ?').get(token))) {
       db.exec('ROLLBACK');
       return back('Esta venta ya estaba registrada. No se descontó otra vez.', true);
     }
-    const a = db.prepare('SELECT * FROM animales WHERE id = ?').get(animalId) as any;
-    const r = a && db.prepare('UPDATE animales SET cantidad = cantidad - ? WHERE id = ? AND cantidad >= ? AND activo = 1').run(cant, animalId, cant);
-    if (!r?.changes) {
-      db.exec('ROLLBACK');
-      return back(`No hay suficientes ${a ? a.tipo : 'animales'} (quedan ${a?.cantidad ?? 0})`);
+    const partes: string[] = [];
+    if (animalId) {
+      const a = db.prepare('SELECT * FROM animales WHERE id = ?').get(animalId) as any;
+      const r = a && db.prepare('UPDATE animales SET cantidad = cantidad - ? WHERE id = ? AND cantidad >= ? AND activo = 1').run(cant, animalId, cant);
+      if (!r?.changes) {
+        db.exec('ROLLBACK');
+        return back(`No hay suficientes ${a ? a.tipo : 'animales'} (quedan ${a?.cantidad ?? 0})`);
+      }
+      db.prepare('INSERT INTO ventas (empleado_id, animal_id, cantidad, precio_unit, metodo, token) VALUES (?,?,?,?,?,?)')
+        .run(empleadoId, animalId, cant, a.precio, metodo, token);
+      partes.push(`${cant} ${a.tipo} — ${crc(cant * a.precio)}`);
     }
-    db.prepare('INSERT INTO ventas (empleado_id, animal_id, cantidad, precio_unit, metodo, factura, token) VALUES (?,?,?,?,?,?,?)')
-      .run(empleadoId, animalId, cant, a.precio, metodo, factura, token);
-    if (factura) fs.writeFileSync(path.join(FACTURAS, factura), datos!);
+    if (grooming) {
+      // Mismo código que la venta del animal (viven en tablas distintas): un solo comprobante reúne todo.
+      db.prepare('INSERT INTO servicios (empleado_id, monto, metodo, token) VALUES (?,?,?,?)')
+        .run(empleadoId, monto, metodo, token);
+      partes.push(`grooming ${crc(monto)}`);
+    }
     db.exec('COMMIT');
-    return back(`Venta registrada: ${cant} ${a.tipo} — ${crc(cant * a.precio)}`, true);
+    return back(`Venta registrada: ${partes.join(' + ')}`, true, token && TOKEN_RE.test(token) ? token : '');
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
@@ -53,6 +56,41 @@ const empleados = db.prepare('SELECT * FROM empleados WHERE activo = 1 ORDER BY 
 const animales = db.prepare('SELECT * FROM animales WHERE cantidad > 0 AND activo = 1 ORDER BY tipo').all() as any[];
 const tokenVenta = randomBytes(16).toString('hex');
 const msg = Astro.url.searchParams.get('msg');
+const reciboParam = Astro.url.searchParams.get('recibo') ?? '';
+const comprobante = (() => {
+  if (!TOKEN_RE.test(reciboParam)) return null;
+  const ventas = db.prepare(`SELECT v.*, a.tipo, e.nombre FROM ventas v JOIN animales a ON a.id = v.animal_id
+    JOIN empleados e ON e.id = v.empleado_id WHERE v.token = ?`).all(reciboParam) as any[];
+  const servicio = db.prepare(`SELECT s.*, e.nombre FROM servicios s JOIN empleados e ON e.id = s.empleado_id WHERE s.token = ?`).get(reciboParam) as any;
+  const base = ventas[0] ?? servicio;
+  if (!base) return null;
+  const lineas = [
+    ...ventas.map(v => ({ texto: `${v.cantidad} x ${v.tipo}`, detalle: v.cantidad > 1 ? `${crc(v.precio_unit)} c/u` : '', importe: v.cantidad * v.precio_unit })),
+    ...(servicio ? [{ texto: 'Grooming', detalle: '', importe: servicio.monto }] : []),
+  ];
+  const [dia, hora] = base.fecha.split(' ');
+  return {
+    nombre: base.nombre, metodo: base.metodo, lineas, total: lineas.reduce((n, l) => n + l.importe, 0),
+    fecha: `${dia.split('-').reverse().join('/')} ${hora.slice(0, 5)}`, numero: reciboParam.slice(-6).toUpperCase(),
+  };
+})();
+const verHistorial = !comprobante && Astro.url.searchParams.get('ver') === 'historial';
+const desdeHistorial = Astro.url.searchParams.get('desde') === 'historial';
+// Historial de ventas desde el último cierre: al hacer el cierre el dueño, esta lista queda vacía.
+const historial = (() => {
+  if (!verHistorial) return [] as any[];
+  const ventas = db.prepare(`SELECT v.token, v.fecha, v.cantidad, v.precio_unit, v.metodo, a.tipo, e.nombre FROM ventas v
+    JOIN animales a ON a.id = v.animal_id JOIN empleados e ON e.id = v.empleado_id WHERE v.cierre IS NULL AND v.token IS NOT NULL`).all() as any[];
+  const servicios = db.prepare(`SELECT s.token, s.fecha, s.monto, s.metodo, e.nombre FROM servicios s
+    JOIN empleados e ON e.id = s.empleado_id WHERE s.cierre IS NULL AND s.token IS NOT NULL`).all() as any[];
+  const porToken = new Map<string, any>();
+  const entrada = (r: any) => porToken.get(r.token) ?? porToken.set(r.token, { token: r.token, fecha: r.fecha, nombre: r.nombre, metodo: r.metodo, partes: [] as string[], total: 0 }).get(r.token);
+  for (const v of ventas) { const e = entrada(v); e.partes.push(`${v.cantidad} x ${v.tipo}`); e.total += v.cantidad * v.precio_unit; }
+  for (const s of servicios) { const e = entrada(s); e.partes.push('Grooming'); e.total += s.monto; }
+  return [...porToken.values()].sort((a, b) => b.fecha.localeCompare(a.fecha));
+})();
+const pedido = Number(Astro.url.searchParams.get('ancho'));
+const ancho = [58, 80].includes(pedido) ? pedido : negocio.anchoPapel; // milímetros del rollo
 const ok = Astro.url.searchParams.has('ok');
 ---
 <!doctype html>
@@ -62,6 +100,7 @@ const ok = Astro.url.searchParams.has('ok');
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Reportar venta · Agromag Control de Ventas</title>
     <ClientRouter />
+    {comprobante && <style set:html={`@page { size: ${ancho}mm auto; margin: 0; }`} />}
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -72,19 +111,96 @@ const ok = Astro.url.searchParams.has('ok');
     <div class="page">
       <header class="topbar">
         <a aria-label="Agromag, reportar venta" class="brand" href="/">
-          <span class="logo-wrap"><img alt="Logo de Agromag" class="logo" src="/logo.png" width="45" height="45" /></span>
+          <span class="logo-wrap"><img alt="Logo de Agromag" class="logo" src="/logo.png" width="78" height="78" /></span>
           <span class="brand-copy">
             <span class="brand-line"><strong>Agromag</strong> <span>Control de Ventas</span></span>
             <span class="brand-sub">Reportar venta</span>
           </span>
         </a>
+        {verHistorial
+          ? <a class="top-link" href="/"><i aria-hidden="true" class="ti ti-shopping-cart"></i>Registrar venta</a>
+          : <a class="top-link" href="/?ver=historial"><i aria-hidden="true" class="ti ti-receipt"></i>Historial</a>}
       </header>
 
       <main class="main">
+        {comprobante ? (
+          <>
+            <div class="page-intro no-imprimir">
+              <p class="eyebrow">{msg ? 'Venta registrada' : 'Historial de ventas'}</p>
+              <h1>Comprobante de la venta</h1>
+              <p class="intro-copy">Revíselo e imprímalo para el cliente, o vuelva para registrar otra venta.</p>
+            </div>
+
+            {msg && (
+              <div class:list={['aviso no-imprimir', ok ? 'aviso-ok' : 'aviso-error']} role="alert">
+                <i aria-hidden="true" class:list={['ti', ok ? 'ti-circle-check' : 'ti-alert-circle']}></i>
+                <strong>{msg}</strong>
+              </div>
+            )}
+
+          <article class="papel" style={`width: ${ancho - 8}mm`}>
+            <header class="centro">
+              <h2>{negocio.nombre}</h2>
+              {negocio.detalle && <p>{negocio.detalle}</p>}
+              {negocio.lugar && <p>{negocio.lugar}</p>}
+              {negocio.telefono && <p>Tel. {negocio.telefono}</p>}
+            </header>
+            <hr class="sep" />
+            <p class="centro"><b>COMPROBANTE DE VENTA</b></p>
+            <p class="fila"><span>Fecha:</span><span>{comprobante.fecha}</span></p>
+            <p class="fila"><span>Atendió:</span><span>{comprobante.nombre}</span></p>
+            <p class="fila"><span>N°:</span><span>{comprobante.numero}</span></p>
+            <hr class="sep" />
+            {comprobante.lineas.map(l => (
+              <div>
+                <p class="fila"><span>{l.texto}</span><span>{crc(l.importe)}</span></p>
+                {l.detalle && <p class="det">&nbsp;&nbsp;{l.detalle}</p>}
+              </div>
+            ))}
+            <hr class="sep" />
+            <p class="fila total"><span>TOTAL</span><span>{crc(comprobante.total)}</span></p>
+            <p class="fila"><span>Pago:</span><span>{comprobante.metodo === 'sinpe' ? 'SINPE Móvil' : 'Tarjeta'}</span></p>
+            <hr class="sep" />
+            {negocio.pie && <p class="centro">{negocio.pie}</p>}
+          </article>
+
+            <div class="acciones no-imprimir">
+              <button type="button" class="submit" data-imprimir><i aria-hidden="true" class="ti ti-printer"></i>Imprimir factura</button>
+              <a class="volver" href={desdeHistorial ? '/?ver=historial' : '/'}>Volver</a>
+            </div>
+          </>
+        ) : verHistorial ? (
+          <>
+            <div class="page-intro">
+              <p class="eyebrow">Historial de ventas</p>
+              <h1>Ventas desde el último cierre</h1>
+              <p class="intro-copy">Vea o vuelva a imprimir cualquier factura. Esta lista se limpia cuando el dueño hace el cierre del día.</p>
+            </div>
+            {historial.length ? (
+              <ul class="historial">
+                {historial.map(h => (
+                  <li class="entrada">
+                    <div class="entrada-info">
+                      <span class="entrada-hora">{h.fecha.slice(11, 16)}</span>
+                      <strong>{h.partes.join(' + ')}</strong>
+                      <span class="entrada-sub">{h.nombre} · {h.metodo === 'sinpe' ? 'SINPE' : 'Tarjeta'}</span>
+                    </div>
+                    <span class="entrada-total">{crc(h.total)}</span>
+                    <div class="entrada-acciones">
+                      <a class="mini" href={`/?recibo=${h.token}&desde=historial`}><i aria-hidden="true" class="ti ti-eye"></i>Ver factura</a>
+                      <a class="mini principal" href={`/?recibo=${h.token}&desde=historial&imprimir=1`}><i aria-hidden="true" class="ti ti-printer"></i>Imprimir</a>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : <p class="vacio">No hay ventas desde el último cierre.</p>}
+          </>
+        ) : (
+          <>
         <div class="page-intro">
           <p class="eyebrow">Registro de inventario</p>
           <h1>Registrar una venta</h1>
-          <p class="intro-copy">Completa los datos de la venta. La factura es opcional y puedes adjuntarla al final.</p>
+          <p class="intro-copy">Completa los datos de la venta.</p>
         </div>
 
         {msg && (
@@ -95,9 +211,8 @@ const ok = Astro.url.searchParams.has('ok');
         )}
 
         {!empleados.length ? <p class="vacio">Todavía no hay empleados. El dueño debe agregarlos en Administración.</p>
-        : !animales.length ? <p class="vacio">No hay animales disponibles para vender.</p>
         : (
-          <form data-astro-reload aria-label="Registrar una venta" class="form-card" enctype="multipart/form-data" method="post" id="venta">
+          <form data-astro-reload aria-label="Registrar una venta" class="form-card" method="post" id="venta">
             <input type="hidden" name="token" value={tokenVenta} />
             <section aria-label="Datos de la venta" class="fields">
               <div class="field-grid">
@@ -110,20 +225,31 @@ const ok = Astro.url.searchParams.has('ok');
                 </div>
                 <div class="field">
                   <label class="field-label" for="animal">Animal</label>
-                  <select class="select" id="animal" name="animal" required>
-                    <option value="">— Elija —</option>
+                  <select class="select" id="animal" name="animal">
+                    <option value="">— Sin animal —</option>
                     {animales.map(a => <option value={a.id} data-stock={a.cantidad}>{a.tipo} — {crc(a.precio)} (quedan {a.cantidad})</option>)}
                   </select>
                 </div>
               </div>
 
-              <div class="field quantity-field">
+              <div class="field quantity-field" id="bloque-cantidad" hidden>
                 <label class="field-label" for="quantity">Cantidad vendida</label>
                 <div class="qty-wrap">
-                  <button type="button" class="qty-btn" data-paso="-1" aria-label="Disminuir cantidad"><i aria-hidden="true" class="ti ti-minus"></i></button>
-                  <input class="number" id="quantity" min="1" name="cantidad" required step="1" type="number" value="1" inputmode="numeric" />
-                  <button type="button" class="qty-btn" data-paso="1" aria-label="Aumentar cantidad"><i aria-hidden="true" class="ti ti-plus"></i></button>
+                  <button type="button" class="qty-btn" data-paso="-1" aria-label="Disminuir cantidad"><span aria-hidden="true">−</span></button>
+                  <input class="number" id="quantity" min="1" name="cantidad" step="1" type="number" value="1" inputmode="numeric" />
+                  <button type="button" class="qty-btn" data-paso="1" aria-label="Aumentar cantidad"><span aria-hidden="true">+</span></button>
                   <span class="unit">unidades</span>
+                </div>
+              </div>
+
+              <div class="field grooming-field">
+                <label class="radio-choice grooming-check"><input type="checkbox" name="grooming" value="1" id="grooming" /><span>Incluir grooming</span></label>
+                <div class="grooming-monto" id="bloque-monto" hidden>
+                  <label class="field-label" for="grooming-monto">¿Cuánto cobró por el grooming?</label>
+                  <div class="money-wrap">
+                    <span class="currency" aria-hidden="true">₡</span>
+                    <input class="number" id="grooming-monto" name="grooming_monto" type="number" min="1" step="1" inputmode="numeric" placeholder="Monto" />
+                  </div>
                 </div>
               </div>
 
@@ -136,39 +262,14 @@ const ok = Astro.url.searchParams.has('ok');
               </fieldset>
             </section>
 
-            <aside aria-label="Adjuntar factura opcional" class="receipt-panel">
-              <div class="receipt-heading">
-                <span>Captura de la factura</span>
-                <span class="optional">Opcional</span>
-              </div>
-              <p class="receipt-copy">Adjunta una imagen o PDF para guardar el comprobante con esta venta.</p>
-              <input accept="image/*,application/pdf" class="file-input" id="invoice" name="factura" type="file" />
-              <label class="dropzone" for="invoice" id="soltar">
-                <i aria-hidden="true" class="ti ti-cloud-upload upload-icon"></i>
-                <span>
-                  <span class="drop-main">Arrastra un archivo aquí o <span class="drop-link">elige uno</span></span>
-                  <span class="drop-hint">Imagen o PDF · máximo 15 MB</span>
-                </span>
-              </label>
-              <div aria-label="Vista previa de archivo seleccionado" class="selected-file" hidden>
-                <div aria-hidden="true" class="preview">
-                  <img alt="" hidden />
-                  <span class="preview-top"></span><span class="preview-line"></span><span class="preview-line"></span><span class="preview-line short"></span>
-                </div>
-                <div class="file-meta">
-                  <div class="file-name"></div>
-                  <div class="file-kind"></div>
-                </div>
-                <button class="remove-file" type="button">Quitar</button>
-              </div>
-              <p class="receipt-note">El archivo es opcional; puedes registrar la venta sin adjuntarlo.</p>
-            </aside>
 
             <div class="card-footer">
-              <p class="submit-help">Revisa el nombre, animal y cantidad antes de registrar.</p>
+              <p class="submit-help">Revisa el nombre, lo vendido y el monto antes de registrar.</p>
               <button class="submit" type="submit">Registrar venta</button>
             </div>
           </form>
+        )}
+          </>
         )}
 
       </main>
@@ -176,20 +277,40 @@ const ok = Astro.url.searchParams.has('ok');
 
     <script>import '../scripts/avisos';</script>
     <script>
-      // Soltar una imagen fuera de la zona no debe abrirla y perder el formulario.
-      addEventListener('dragover', e => e.preventDefault());
-      addEventListener('drop', e => e.preventDefault());
+      // Imprime la vista previa (la hoja de estilos de impresión deja solo el comprobante).
+      document.addEventListener('click', e => {
+        if ((e.target as HTMLElement).closest('[data-imprimir]')) print();
+      });
 
       // Con el cambio de vistas el DOM se reemplaza: se inicializa en cada carga.
       document.addEventListener('astro:page-load', () => {
+      // "Imprimir" desde el historial abre el comprobante y lanza la impresión una sola vez.
+      const dir = new URL(location.href);
+      if (dir.searchParams.has('imprimir') && document.querySelector('.papel')) {
+        dir.searchParams.delete('imprimir');
+        history.replaceState(history.state, '', dir.pathname + dir.search);
+        setTimeout(() => print(), 300);
+      }
       const form = document.querySelector<HTMLFormElement>('#venta');
       if (form) {
-        const zona = document.getElementById('soltar')!;
-        const input = form.querySelector<HTMLInputElement>('#invoice')!;
-        const sel = form.querySelector<HTMLElement>('.selected-file')!;
-        const img = sel.querySelector('img')!;
         const animal = form.querySelector<HTMLSelectElement>('#animal')!;
         const cant = form.querySelector<HTMLInputElement>('#quantity')!;
+        const grooming = form.querySelector<HTMLInputElement>('#grooming')!;
+        const monto = form.querySelector<HTMLInputElement>('#grooming-monto')!;
+
+        // Sin animal no hay cantidad; con grooming se pide el monto. Se debe elegir al menos una de las dos cosas.
+        const sincronizar = () => {
+          const hayAnimal = !!animal.value;
+          form.querySelector<HTMLElement>('#bloque-cantidad')!.hidden = !hayAnimal;
+          cant.disabled = !hayAnimal;
+          form.querySelector<HTMLElement>('#bloque-monto')!.hidden = !grooming.checked;
+          monto.disabled = !grooming.checked;
+          monto.required = grooming.checked;
+          animal.required = !grooming.checked;
+        };
+        animal.addEventListener('change', sincronizar);
+        grooming.addEventListener('change', () => { sincronizar(); if (grooming.checked) monto.focus(); });
+        sincronizar();
 
         // La cantidad no puede pasar de lo que hay del animal elegido.
         const limitar = () => {
@@ -205,32 +326,6 @@ const ok = Astro.url.searchParams.has('ok');
           cant.value = String(Math.min(Math.max(1, n + Number(b.dataset.paso)), max));
           limitar();
         }));
-
-        const mostrar = () => {
-          const f = input.files?.[0];
-          sel.hidden = !f;
-          if (!f) return;
-          sel.querySelector('.file-name')!.textContent = f.name;
-          const esImg = f.type.startsWith('image/');
-          sel.querySelector('.file-kind')!.textContent = (esImg ? 'Imagen' : 'PDF') + ' · archivo seleccionado';
-          img.hidden = !esImg;
-          sel.querySelectorAll('.preview > span').forEach(s => ((s as HTMLElement).style.display = esImg ? 'none' : ''));
-          if (esImg) img.src = URL.createObjectURL(f);
-        };
-        input.addEventListener('change', mostrar);
-        sel.querySelector('.remove-file')!.addEventListener('click', () => { input.value = ''; mostrar(); });
-
-        zona.addEventListener('dragover', () => zona.classList.add('encima'));
-        zona.addEventListener('dragleave', () => zona.classList.remove('encima'));
-        zona.addEventListener('drop', e => {
-          zona.classList.remove('encima');
-          const archivo = e.dataTransfer?.files[0];
-          if (!archivo) return;
-          const dt = new DataTransfer(); // una factura por venta
-          dt.items.add(archivo);
-          input.files = dt.files;
-          mostrar();
-        });
       }
       });
     </script>
@@ -243,15 +338,15 @@ const ok = Astro.url.searchParams.has('ok');
   body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--body); }
   button, input, select { font: inherit; }
   .page { min-height: 100vh; min-height: 100dvh; background: var(--paper); }
-  .topbar { height: 82px; display: flex; align-items: center; justify-content: space-between; padding: 0 6.1%; background: var(--green); color: #fff; }
-  .brand { display: flex; align-items: center; gap: 13px; min-width: 0; color: inherit; text-decoration: none; }
-  .logo-wrap { width: 50px; height: 50px; border-radius: 50%; background: #fff; display: grid; place-items: center; flex: none; }
-  .logo { width: 45px; height: 45px; object-fit: contain; border-radius: 50%; }
+  .topbar { height: 112px; display: flex; align-items: center; justify-content: space-between; padding: 0 6.1%; background: var(--green); color: #fff; }
+  .brand { display: flex; align-items: center; gap: 18px; min-width: 0; color: inherit; text-decoration: none; }
+  .logo-wrap { width: 84px; height: 84px; box-shadow: 0 6px 20px rgba(0, 0, 0, .18); border-radius: 50%; background: #fff; display: grid; place-items: center; flex: none; }
+  .logo { width: 78px; height: 78px; object-fit: contain; border-radius: 50%; }
   .brand-copy { line-height: 1.2; }
-  .brand-line { font-size: 16px; letter-spacing: -.02em; }
-  .brand-line strong { font-family: var(--display); font-size: 19px; font-weight: 700; letter-spacing: -.045em; }
-  .brand-sub { display: block; margin-top: 3px; color: rgba(255, 255, 255, .76); font-size: 12px; }
-  .main { width: min(1040px, calc(100% - 48px)); margin: 0 auto; padding: 46px 0 28px; }
+  .brand-line { font-size: 18px; letter-spacing: -.02em; }
+  .brand-line strong { font-family: var(--display); font-size: 26px; font-weight: 700; letter-spacing: -.045em; }
+  .brand-sub { display: block; margin-top: 4px; color: rgba(255, 255, 255, .8); font-size: 14px; }
+  .main { width: min(720px, calc(100% - 48px)); margin: 0 auto; padding: 46px 0 28px; }
   .page-intro { margin: 0 0 24px 3px; }
   .eyebrow { margin: 0 0 7px; color: var(--green); font-size: 12px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
   h1 { margin: 0; font-family: var(--display); font-size: clamp(28px, 3vw, 38px); line-height: 1.08; letter-spacing: -.055em; font-weight: 600; color: var(--ink); }
@@ -263,7 +358,7 @@ const ok = Astro.url.searchParams.has('ok');
   .aviso-error { background: var(--error-bg); color: var(--error); border: 1px solid var(--error-line); }
   .vacio { padding: 28px; text-align: center; color: var(--muted); background: #fff; border: 1px dashed var(--line-strong); border-radius: 14px; }
 
-  .form-card { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(280px, .82fr); background: var(--surface); border: 1px solid rgba(47, 111, 79, .1); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
+  .form-card { display: grid; grid-template-columns: minmax(0, 1fr); background: var(--surface); border: 1px solid rgba(47, 111, 79, .1); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
   .fields { padding: 29px 34px 30px; }
   .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 20px; }
   .field { min-width: 0; }
@@ -275,45 +370,68 @@ const ok = Astro.url.searchParams.has('ok');
   .qty-wrap { display: flex; align-items: center; gap: 10px; }
   .qty-wrap .number { width: 84px; max-width: 84px; padding: 0 6px; text-align: center; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; -moz-appearance: textfield; appearance: textfield; }
   .qty-wrap .number::-webkit-inner-spin-button, .qty-wrap .number::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-  .qty-btn { width: 44px; height: 44px; flex: none; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; background: #fff; color: var(--green-deep); font-size: 20px; cursor: pointer; transition: background .16s, border-color .16s, color .16s, transform .12s; }
+  .qty-btn { width: 44px; height: 44px; flex: none; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; background: #fff; color: var(--green-deep); font-size: 26px; line-height: 1; font-weight: 500; padding: 0 0 2px; cursor: pointer; transition: background .16s, border-color .16s, color .16s, transform .12s; }
   .qty-btn:hover { background: var(--green-soft); border-color: var(--green); }
   .qty-btn:active { transform: scale(.92); background: var(--green); border-color: var(--green); color: #fff; }
   .qty-btn:focus-visible { outline: 3px solid rgba(47, 111, 79, .25); outline-offset: 2px; }
   .unit { font-size: 13px; color: var(--muted); }
   fieldset { min-width: 0; margin: 21px 0 0; padding: 0; border: 0; }
   legend.group-legend { padding: 0; }
+  .top-link { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border: 1px solid rgba(255, 255, 255, .4); border-radius: 8px; color: #fff; font-size: 14px; font-weight: 600; text-decoration: none; flex: none; }
+  .top-link:hover { background: rgba(255, 255, 255, .12); }
+  .historial { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+  .entrada { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px 18px; align-items: center; padding: 16px 18px; background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
+  .entrada-info { display: grid; gap: 2px; min-width: 0; }
+  .entrada-hora { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: .04em; }
+  .entrada-info strong { font-size: 16px; overflow-wrap: anywhere; }
+  .entrada-sub { font-size: 13px; color: var(--muted); }
+  .entrada-total { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .entrada-acciones { display: flex; gap: 8px; }
+  .mini { display: inline-flex; align-items: center; gap: 6px; min-height: 42px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 9px; background: #fff; color: var(--green-deep); font-size: 13px; font-weight: 700; text-decoration: none; white-space: nowrap; }
+  .mini:hover { background: var(--green-soft); }
+  .mini.principal { background: var(--green); border-color: var(--green); color: #fff; }
+  .mini.principal:hover { background: var(--green-deep); }
+  @media (max-width: 620px) {
+    .top-link { padding: 0 12px; font-size: 13px; }
+    .entrada { grid-template-columns: minmax(0, 1fr) auto; }
+    .entrada-acciones { grid-column: 1 / -1; }
+    .entrada-acciones .mini { flex: 1; justify-content: center; }
+  }
+
+  /* Comprobante (vista previa e impresión en rollo térmico) */
+  .papel { margin: 0 auto 18px; padding: 5mm 3mm 8mm; background: #fff; color: #000; border: 1px solid var(--line); border-radius: 6px; box-shadow: var(--shadow);
+    font: 12px/1.4 'Courier New', Courier, monospace; }
+  .papel p { margin: 0; }
+  .papel h2 { margin: 0; font: 700 18px/1.2 'Courier New', monospace; letter-spacing: .08em; text-align: center; }
+  .papel .centro { text-align: center; }
+  .papel .sep { border: 0; border-top: 1px dashed #000; margin: 8px 0; }
+  .papel .fila { display: flex; justify-content: space-between; gap: 8px; }
+  .papel .det { font-size: 11px; }
+  .papel .total { font-size: 15px; font-weight: 700; }
+  .acciones { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+  .acciones .submit { display: inline-flex; align-items: center; gap: 8px; }
+  .volver { display: inline-flex; align-items: center; min-height: 50px; padding: 0 24px; border: 1px solid var(--line-strong); border-radius: 9px; background: #fff; color: var(--green-deep); font-weight: 700; font-size: 14px; text-decoration: none; }
+  .volver:hover { background: var(--green-soft); }
+  @media (max-width: 520px) { .acciones { flex-direction: column; } .acciones > * { width: 100%; justify-content: center; } }
+  @media print {
+    html, body { background: #fff; }
+    .topbar, .no-imprimir { display: none !important; }
+    .main { width: auto; max-width: none; margin: 0; padding: 0; }
+    .papel { margin: 0; border: 0; border-radius: 0; box-shadow: none; padding-bottom: 12mm; }
+  }
+  .grooming-field { margin-top: 20px; }
+  .grooming-check { display: inline-flex; }
+  .grooming-monto { margin-top: 14px; max-width: 280px; }
+  .grooming-monto .money-wrap { position: relative; }
+  .grooming-monto .currency { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--muted); font-weight: 600; }
+  .grooming-monto .number { padding-left: 32px; }
+  [hidden] { display: none !important; }
   .radio-row { display: flex; gap: 10px; flex-wrap: wrap; }
   .radio-choice { position: relative; display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 0 16px; border: 1px solid var(--line-strong); border-radius: 9px; background: #fff; color: var(--ink); font-size: 14px; font-weight: 600; cursor: pointer; transition: background .16s, border-color .16s, box-shadow .16s; }
   .radio-choice:has(input:checked) { border-color: var(--green); background: var(--green-soft); box-shadow: inset 0 0 0 1px var(--green); color: var(--green-deep); }
   .radio-choice:focus-within { outline: 3px solid rgba(47, 111, 79, .18); outline-offset: 2px; }
   .radio-choice input { width: 17px; height: 17px; margin: 0; accent-color: var(--green); }
 
-  .receipt-panel { padding: 30px 28px; background: #f7faf8; border-left: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; position: relative; }
-  .receipt-heading { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--ink); font-size: 14px; font-weight: 700; }
-  .optional { margin-left: auto; padding: 4px 8px; border-radius: 5px; background: #e8efea; color: #5a6e61; font-size: 10px; font-weight: 700; letter-spacing: .02em; }
-  .receipt-copy { margin: 9px 0 18px; color: var(--muted); font-size: 13px; line-height: 1.5; }
-  .dropzone { display: flex; align-items: flex-start; gap: 12px; padding: 16px 14px; border: 1px dashed #a9bdb0; border-radius: 11px; background: #fff; color: var(--green-deep); text-align: left; cursor: pointer; transition: background .16s, border-color .16s; }
-  .dropzone:hover, .dropzone.encima { border-color: var(--green); background: #f1f7f3; }
-  .upload-icon { font-size: 21px; line-height: 1; flex: none; margin-top: 2px; }
-  .drop-main { display: block; color: var(--ink); font-size: 13px; font-weight: 600; line-height: 1.45; }
-  .drop-link { color: var(--green); text-decoration: underline; text-underline-offset: 3px; }
-  .drop-hint { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.45; }
-  .file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
-  .file-input:focus-visible + .dropzone { outline: 3px solid rgba(47, 111, 79, .18); outline-offset: 2px; }
-  .selected-file { display: flex; align-items: center; gap: 11px; margin-top: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
-  .selected-file[hidden] { display: none; }
-  .preview { width: 44px; height: 50px; flex: none; padding: 8px 6px; border: 1px solid #d8e2db; border-radius: 5px; background: #f8faf8; display: flex; flex-direction: column; gap: 4px; justify-content: flex-start; overflow: hidden; }
-  .preview img { width: 100%; height: 100%; object-fit: cover; margin: -8px -6px; width: 44px; height: 50px; max-width: none; }
-  .preview img[hidden] { display: none; }
-  .preview-top { height: 7px; width: 18px; background: #dceade; border-radius: 2px; }
-  .preview-line { height: 3px; width: 100%; background: #d7ded9; border-radius: 2px; }
-  .preview-line.short { width: 64%; }
-  .file-meta { min-width: 0; flex: 1; }
-  .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 12px; font-weight: 700; }
-  .file-kind { margin-top: 3px; color: var(--muted); font-size: 11px; }
-  .remove-file { min-height: 42px; padding: 0 8px; border: 0; background: transparent; color: var(--error); font-size: 12px; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
-  .remove-file:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; border-radius: 4px; }
-  .receipt-note { margin: auto 0 0; padding-top: 18px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 
   .card-footer { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 19px 34px; border-top: 1px solid var(--line); background: #fbfcfb; }
   .submit-help { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
@@ -325,11 +443,13 @@ const ok = Astro.url.searchParams.has('ok');
   .admin-link { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 12px; color: var(--green-deep); font-size: 13px; font-weight: 600; text-decoration: underline; text-underline-offset: 4px; }
 
   @media (max-width: 760px) {
-    .topbar { height: 72px; padding: 0 18px; }
+    .topbar { height: 90px; padding: 0 18px; }
     .brand-line > span { display: none; }
     .topbar { gap: 10px; }
-    .logo-wrap { width: 44px; height: 44px; }
-    .logo { width: 40px; height: 40px; }
+    .logo-wrap { width: 66px; height: 66px; }
+    .brand { gap: 14px; }
+    .brand-line strong { font-size: 22px; }
+    .logo { width: 60px; height: 60px; }
     .main { width: min(100% - 28px, 560px); padding: 28px 0 16px; }
     .page-intro { margin: 0 0 18px; }
     .eyebrow { font-size: 11px; }
@@ -341,10 +461,6 @@ const ok = Astro.url.searchParams.has('ok');
     fieldset { margin-top: 18px; }
     .radio-row { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
     .radio-choice { min-height: 48px; padding: 0 12px; }
-    .receipt-panel { padding: 20px 19px; background: #f8faf8; border-left: 0; border-top: 1px solid var(--line); }
-    .receipt-copy { margin: 8px 0 14px; }
-    .dropzone { padding: 15px 13px; }
-    .receipt-note { margin-top: 13px; padding-top: 0; }
     .card-footer { grid-column: 1; padding: 16px 19px 19px; align-items: stretch; flex-direction: column-reverse; gap: 11px; }
     .submit { width: 100%; min-height: 52px; }
     .footer { padding-top: 12px; }

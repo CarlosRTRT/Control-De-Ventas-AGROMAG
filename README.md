@@ -97,13 +97,49 @@ El paso 2 de preparar la VPS **no se repite**. Todos los proyectos comparten el 
 | Reiniciar uno                    | `pm2 restart agromag-ventas`                         |
 | Respaldo manual                  | `bash backup.sh` (guarda 30 días en `/opt/backups`)  |
 
-**Respaldo automático diario** (a las 2 a. m.): `crontab -e` y agregue
+**Respaldo automático diario** (por defecto a las 2 a. m.). Una sola vez, como `deploy`:
 
+```bash
+cd /opt/apps/agromag-ventas && bash vps/programar-respaldo.sh        # HORA=3 bash vps/programar-respaldo.sh para otra hora
 ```
-0 2 * * * cd /opt/apps/agromag-ventas && bash backup.sh >> /opt/backups/agromag-ventas.log 2>&1
-```
+
+Deja la tarea programada en cron (se puede correr varias veces sin duplicarla). Pruébelo sin esperar a la noche con `bash backup.sh`; el registro queda en `/opt/backups/agromag-ventas.log` y la tarea se ve con `crontab -l`.
 
 Descargue copias a su computadora de vez en cuando: una copia en la misma VPS no protege si la VPS se daña.
+
+## Copia de seguridad fuera de la VPS (Litestream + Supabase)
+
+Si la VPS se daña o se borra, las ventas no se pierden: **Litestream** copia la base de datos a Supabase Storage **de forma continua** (cada pocos segundos). Es aparte del `backup.sh` diario, que sigue sirviendo.
+
+**Una sola vez, en Supabase** (su panel):
+1. **Storage → New bucket**: nombre `agromag-respaldos`, **privado** (no público).
+2. **Storage → S3 Access Keys → New access key**: copie el *Access key ID* y el *Secret access key* (el secreto solo se muestra una vez).
+3. Anote la **referencia del proyecto** (en la dirección `https://REFERENCIA.supabase.co`) y la **región** del proyecto.
+
+**En la VPS, como root** (con el sistema ya funcionando con pm2):
+
+```bash
+bash /root/vps/litestream.sh
+```
+
+Le pide esos datos, instala Litestream verificando la firma de la descarga y deja el servicio activo. Las credenciales quedan en `/etc/litestream.env`, que solo root puede leer. Compruebe que copia:
+
+```bash
+journalctl -u litestream -n 20 --no-pager
+```
+
+**Pruebe la restauración** (hágalo una vez; una copia que nunca se probó no es una copia):
+
+```bash
+bash /root/vps/restaurar.sh /tmp/prueba.db     # restaura en otro archivo y NO toca el sistema
+```
+
+**Si hay que recuperar de verdad** (VPS nueva o base dañada): prepare la VPS como siempre (pasos 2 a 4 de arriba), corra `litestream.sh` con los mismos datos y luego `bash /root/vps/restaurar.sh`. Reemplaza la base actual (la guarda aparte), reinicia el sistema y queda todo hasta la última venta copiada.
+
+Para tener en cuenta:
+- Litestream copia **la base de datos** (ventas, inventario, empleados, servicios, código del local). No copia el archivo `.env`: guarde aparte su `ADMIN_PIN` y la configuración.
+- Los proyectos del plan gratis de Supabase se pausan si pasan muchos días sin actividad. Las copias de Litestream suelen contar como actividad, pero revise en su panel de vez en cuando que el proyecto no esté pausado.
+- Para otro proyecto en la misma VPS: `DB=/opt/data/otro/ventas.db NOMBRE=otro bash litestream.sh`.
 
 ## Código del local (acceso de los empleados)
 

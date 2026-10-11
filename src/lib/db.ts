@@ -13,6 +13,7 @@ export const db = new DatabaseSync(path.join(DATA_DIR, 'ventas.db'));
 db.exec(`
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
+PRAGMA busy_timeout = 5000; -- espera hasta 5 s si la base está ocupada (por ejemplo, mientras Litestream copia)
 CREATE TABLE IF NOT EXISTS animales (
   id INTEGER PRIMARY KEY, tipo TEXT NOT NULL UNIQUE COLLATE NOCASE,
   cantidad INTEGER NOT NULL CHECK (cantidad >= 0), precio INTEGER NOT NULL CHECK (precio >= 0),

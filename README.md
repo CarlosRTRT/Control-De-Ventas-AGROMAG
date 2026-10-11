@@ -107,6 +107,21 @@ Deja la tarea programada en cron (se puede correr varias veces sin duplicarla). 
 
 Descargue copias a su computadora de vez en cuando: una copia en la misma VPS no protege si la VPS se daña.
 
+## Limpiar las ventas de prueba antes de empezar de verdad
+
+Si probó el sistema con ventas falsas, bórrelas **antes** de activar la copia a Supabase (Litestream copia todo lo que haya en la base). Como `deploy`, en la VPS:
+
+```bash
+cd /opt/apps/agromag-ventas && bash deploy.sh          # trae el script nuevo
+bash vps/limpiar-ventas.sh
+```
+
+Muestra cuántas ventas va a borrar, hace un **respaldo** en `/opt/backups/agromag-ventas/antes-de-limpiar-FECHA.db` y pide escribir `LIMPIAR` para continuar. Borra solo las ventas y los servicios vendidos: **conserva** animales, productos, servicios con su precio, empleados y el código del local, y devuelve al inventario lo que las ventas de prueba habían descontado. Apaga el sistema unos segundos y lo vuelve a encender solo.
+
+Después entre al panel y ponga las **cantidades reales** del inventario.
+
+Si Litestream ya estaba activo, la limpieza también se copia, pero el historial viejo con las ventas de prueba queda en el bucket de Supabase. Para borrarlo del todo: `systemctl stop litestream`, vacíe la carpeta `agromag-ventas` del bucket en el panel de Supabase y luego `systemctl start litestream`.
+
 ## Copia de seguridad fuera de la VPS (Litestream + Supabase)
 
 Si la VPS se daña o se borra, las ventas no se pierden: **Litestream** copia la base de datos a Supabase Storage **de forma continua** (cada pocos segundos). Es aparte del `backup.sh` diario, que sigue sirviendo.

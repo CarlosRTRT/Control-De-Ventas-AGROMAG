@@ -2,6 +2,7 @@
 import AdminLayout from '../layouts/AdminLayout.astro';
 import { db, crc, MOVIMIENTOS_SQL } from '../lib/db';
 import { cambiarCodigo, codigoLocal, nuevoCodigo } from '../lib/acceso';
+import { numeroDe } from '../lib/comprobante';
 
 const back = (msg: string, ok = false) => Astro.redirect(`/admin?msg=${encodeURIComponent(msg)}${ok ? '&ok' : ''}`, 303);
 
@@ -11,28 +12,53 @@ if (Astro.request.method === 'POST') {
 
   if (accion === 'animal' && f.get('eliminar')) {
     // Se desactiva (no se borra): sus ventas anteriores se conservan en el historial.
-    const a = db.prepare('SELECT tipo FROM animales WHERE id = ?').get(Number(f.get('id'))) as any;
+    const a = db.prepare('SELECT tipo, clase FROM animales WHERE id = ?').get(Number(f.get('id'))) as any;
     db.prepare('UPDATE animales SET activo = 0 WHERE id = ?').run(Number(f.get('id')));
-    return back(a ? `Animal eliminado: ${a.tipo}. Sus ventas se conservan en el historial.` : 'Animal no encontrado', !!a);
+    return back(a ? `${a.clase === 'producto' ? 'Producto' : 'Animal'} eliminado: ${a.tipo}. Sus ventas se conservan en el historial.` : 'No se encontró', !!a);
   }
 
   if (accion === 'animal') {
     const tipo = String(f.get('tipo') || '').trim(), cantidad = Number(f.get('cantidad')), precio = Number(f.get('precio'));
+    const clase = f.get('clase') === 'producto' ? 'producto' : 'animal';
     if (!tipo || !Number.isInteger(cantidad) || cantidad < 0 || !Number.isInteger(precio) || precio < 0)
       return back('Datos inválidos: cantidad y precio deben ser números enteros ≥ 0');
     try {
       if (f.get('id')) db.prepare('UPDATE animales SET tipo = ?, cantidad = ?, precio = ? WHERE id = ?').run(tipo, cantidad, precio, Number(f.get('id')));
       else {
         const ya = db.prepare('SELECT activo FROM animales WHERE tipo = ?').get(tipo) as any;
-        if (ya?.activo) return back(`Ya existe un animal "${tipo}"`);
+        if (ya?.activo) return back(`Ya existe un animal o producto "${tipo}"`);
         // Si lo habían eliminado antes, se reactiva con sus datos nuevos.
-        if (ya) db.prepare('UPDATE animales SET tipo = ?, cantidad = ?, precio = ?, activo = 1 WHERE tipo = ?').run(tipo, cantidad, precio, tipo);
-        else db.prepare('INSERT INTO animales (tipo, cantidad, precio) VALUES (?,?,?)').run(tipo, cantidad, precio);
+        if (ya) db.prepare('UPDATE animales SET tipo = ?, cantidad = ?, precio = ?, clase = ?, activo = 1 WHERE tipo = ?').run(tipo, cantidad, precio, clase, tipo);
+        else db.prepare('INSERT INTO animales (tipo, cantidad, precio, clase) VALUES (?,?,?,?)').run(tipo, cantidad, precio, clase);
       }
     } catch {
-      return back(`Ya existe un animal "${tipo}"`);
+      return back(`Ya existe un animal o producto "${tipo}"`);
     }
-    return back(`Guardado: ${tipo}`, true);
+    return back(clase === 'producto' ? `Producto guardado: ${tipo}` : `Guardado: ${tipo}`, true);
+  }
+
+  if (accion === 'servicio' && f.get('eliminar')) {
+    // Se desactiva (no se borra): las ventas anteriores conservan el nombre y el precio con que se vendieron.
+    const s = db.prepare('SELECT nombre FROM catalogo_servicios WHERE id = ?').get(Number(f.get('id'))) as any;
+    db.prepare('UPDATE catalogo_servicios SET activo = 0 WHERE id = ?').run(Number(f.get('id')));
+    return back(s ? `Servicio eliminado: ${s.nombre}. Sus ventas se conservan en el historial.` : 'No se encontró el servicio', !!s);
+  }
+
+  if (accion === 'servicio') {
+    const nombre = String(f.get('nombre') || '').trim(), precio = Number(f.get('precio'));
+    if (!nombre || !Number.isInteger(precio) || precio < 1) return back('Escriba el nombre del servicio y un precio entero mayor que 0');
+    try {
+      if (f.get('id')) db.prepare('UPDATE catalogo_servicios SET nombre = ?, precio = ? WHERE id = ?').run(nombre, precio, Number(f.get('id')));
+      else {
+        const ya = db.prepare('SELECT activo FROM catalogo_servicios WHERE nombre = ?').get(nombre) as any;
+        if (ya?.activo) return back(`Ya existe el servicio "${nombre}"`);
+        if (ya) db.prepare('UPDATE catalogo_servicios SET nombre = ?, precio = ?, activo = 1 WHERE nombre = ?').run(nombre, precio, nombre);
+        else db.prepare('INSERT INTO catalogo_servicios (nombre, precio) VALUES (?,?)').run(nombre, precio);
+      }
+    } catch {
+      return back(`Ya existe el servicio "${nombre}"`);
+    }
+    return back(`Servicio guardado: ${nombre}`, true);
   }
 
   if (accion === 'codigo') {
@@ -68,9 +94,20 @@ if (Astro.request.method === 'POST') {
   }
 }
 
-const animales = db.prepare('SELECT * FROM animales WHERE activo = 1 ORDER BY tipo').all() as any[];
+const inventario = db.prepare('SELECT * FROM animales WHERE activo = 1 ORDER BY tipo').all() as any[];
+const animales = inventario.filter(a => a.clase !== 'producto');
+const productos = inventario.filter(a => a.clase === 'producto');
+const servicios = db.prepare('SELECT * FROM catalogo_servicios WHERE activo = 1 ORDER BY nombre').all() as any[];
+const secciones = [
+  { clase: 'animal', area: 'sec-animales', titulo: 'Inventario y precios', sub: 'Actualiza la cantidad disponible y el precio de cada animal.', items: animales, plural: 'animales', etiqueta: 'Tipo de animal', agregar: 'Agregar animal', ejemplo: 'Nombre del animal' },
+  { clase: 'producto', area: 'sec-productos', titulo: 'Productos', sub: 'Aserrín, borucha y cualquier otro producto: nombre, cantidad y precio.', items: productos, plural: 'productos', etiqueta: 'Producto', agregar: 'Agregar producto', ejemplo: 'Ej. Aserrín, borucha' },
+];
 const empleados = db.prepare('SELECT * FROM empleados WHERE activo = 1 ORDER BY nombre').all() as any[];
 const ventas = db.prepare(`${MOVIMIENTOS_SQL} WHERE cierre IS NULL ORDER BY fecha DESC, origen, id DESC`).all() as any[];
+// Una venta con varios renglones (animal + producto + servicio) cuenta como UNA venta.
+const cuentaVentas = new Set(ventas.map((v: any) => v.token ?? `${v.origen}${v.id}`)).size;
+const hayFactura = ventas.some((v: any) => v.factura); // la columna solo aparece si alguna venta vieja trae factura
+const tipoDe = (v: any) => (v.clase === 'servicio' ? 'Servicio' : v.clase === 'producto' ? 'Producto' : 'Animal');
 const codigo = codigoLocal();
 const ultimo = (origen: string) => Math.max(0, ...ventas.filter(v => v.origen === origen).map(v => v.id));
 
@@ -100,14 +137,14 @@ for (const v of ventas) {
       <>
         <div class="sales-empty-copy">
           <p class="resumen">
-            <b>{ventas.length} venta{ventas.length > 1 && 's'}</b> por <b class="total-por-cerrar">{crc(total)}</b>
+            <b>{cuentaVentas} venta{cuentaVentas > 1 && 's'}</b> por <b class="total-por-cerrar">{crc(total)}</b>
             <span class="sep">·</span> SINPE {crc(sinpe)} <span class="sep">·</span> Tarjeta {crc(tarjeta)}
           </p>
           <p class="por-empleado">
             {Object.entries(porEmpleado).map(([n, t], i) => <>{i > 0 && <span class="sep">·</span>}{n} {crc(t)} </>)}
           </p>
         </div>
-        <form data-astro-reload method="post" data-confirm={`¿Hacer el cierre de ${ventas.length} venta(s)? Pasarán al historial.`}>
+        <form data-astro-reload method="post" data-confirm={`¿Hacer el cierre de ${cuentaVentas} venta(s)? Pasarán al historial.`}>
           <input type="hidden" name="accion" value="cierre" />
           <input type="hidden" name="hasta" value={ultimo('v')} />
           <input type="hidden" name="hasta_s" value={ultimo('s')} />
@@ -127,24 +164,26 @@ for (const v of ventas) {
       <table>
         <thead>
           <tr>
-            <th scope="col">Fecha</th><th scope="col">Empleado</th><th scope="col">Animal</th>
+            <th scope="col">Fecha</th><th scope="col">N° factura</th><th scope="col">Empleado</th><th scope="col">Detalle</th><th scope="col">Tipo</th>
             <th scope="col" class="num">Cant.</th><th scope="col" class="num">Precio</th><th scope="col" class="num">Total</th>
-            <th scope="col">Método</th><th scope="col">Factura</th>
+            <th scope="col">Método</th>{hayFactura && <th scope="col">Factura</th>}
           </tr>
         </thead>
         <tbody>
           {ventas.map(v => (
             <tr>
               <td class="fecha">{v.fecha.slice(0, 16)}</td>
+              <td>{v.token ? <a class="n-factura" href={`/admin/recibo/${v.token}`} title="Ver la factura">{numeroDe(v.token)}</a> : <span class="sin-factura">—</span>}</td>
               <td>{v.nombre}</td>
               <td>{v.tipo}</td>
+              <td><span class:list={['clase', v.clase]}>{tipoDe(v)}</span></td>
               <td class="num">{v.origen === 's' ? '—' : v.cantidad}</td>
               <td class="num">{crc(v.precio_unit)}</td>
               <td class="num fuerte">{crc(v.cantidad * v.precio_unit)}</td>
               <td><span class:list={['metodo', v.metodo]}>{v.metodo === 'sinpe' ? 'SINPE' : 'Tarjeta'}</span></td>
-              <td>{v.factura
-                ? <a class="factura" href={`/factura/${v.factura}`} target="_blank">Ver <i aria-hidden="true" class="ti ti-arrow-up-right"></i></a>
-                : <span class="sin-factura">—</span>}</td>
+              {hayFactura && (
+                <td>{v.factura ? <a class="factura" href={`/factura/${v.factura}`} target="_blank">Ver <i aria-hidden="true" class="ti ti-arrow-up-right"></i></a> : <span class="sin-factura">—</span>}</td>
+              )}
             </tr>
           ))}
         </tbody>
@@ -154,54 +193,107 @@ for (const v of ventas) {
   )}
 
   <div class="workspace">
-    <section aria-labelledby="inventory-title">
+    {secciones.map(sec => (
+      <section aria-labelledby={`titulo-${sec.clase}`} class={sec.area}>
+        <div class="inventory-head">
+          <div>
+            <h2 class="inventory-title" id={`titulo-${sec.clase}`}>{sec.titulo}</h2>
+            <p class="inventory-sub">{sec.sub}</p>
+          </div>
+        </div>
+        <div class="workbench">
+          {sec.items.map(a => (
+            <form data-astro-reload method="post" class="animal-row animal-row-existing">
+              <input type="hidden" name="accion" value="animal" />
+              <input type="hidden" name="id" value={a.id} />
+              <label class="type-field">
+                <span class="field-label">{sec.etiqueta}</span>
+                <input class="field" name="tipo" value={a.tipo} required />
+              </label>
+              <label>
+                <span class="field-label">Cantidad</span>
+                <input class="field" name="cantidad" type="number" min="0" step="1" value={a.cantidad} required />
+              </label>
+              <label>
+                <span class="field-label">Precio ₡</span>
+                <span class="money-wrap">
+                  <span class="currency" aria-hidden="true">₡</span>
+                  <input class="field" name="precio" type="number" min="0" step="1" value={a.precio} required aria-label="Precio en colones" />
+                </span>
+              </label>
+              <button class="action row-save">Guardar</button>
+              <button class="action eliminar" name="eliminar" value="1" formnovalidate data-confirm={`¿Eliminar ${a.tipo}? Sus ventas anteriores se conservan en el historial.`} aria-label={`Eliminar ${a.tipo}`}><i aria-hidden="true" class="ti ti-trash"></i><span class="txt-el">Eliminar</span></button>
+            </form>
+          ))}
+          {!sec.items.length && <p class="vacio-seccion">Todavía no hay {sec.plural}. Agregue el primero abajo.</p>}
+          <form data-astro-reload method="post" class="add-row">
+            <input type="hidden" name="accion" value="animal" />
+            <input type="hidden" name="clase" value={sec.clase} />
+            <h3 class="add-row-title">{sec.agregar}</h3>
+            <div class="animal-row animal-row-nueva">
+              <label class="type-field">
+                <span class="field-label">{sec.etiqueta}</span>
+                <input class="field" name="tipo" placeholder={sec.ejemplo} required />
+              </label>
+              <label>
+                <span class="field-label">Cantidad</span>
+                <input class="field" name="cantidad" type="number" min="0" step="1" placeholder="Cantidad" required />
+              </label>
+              <label>
+                <span class="field-label">Precio ₡</span>
+                <span class="money-wrap">
+                  <span class="currency" aria-hidden="true">₡</span>
+                  <input class="field" name="precio" type="number" min="0" step="1" placeholder="Precio" required aria-label="Precio en colones" />
+                </span>
+              </label>
+              <button class="action action-primary row-save">Agregar</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    ))}
+
+    <section aria-labelledby="titulo-servicios" class="sec-servicios">
       <div class="inventory-head">
         <div>
-          <h2 class="inventory-title" id="inventory-title">Inventario y precios</h2>
-          <p class="inventory-sub">Actualiza la cantidad disponible y el precio de cada animal.</p>
+          <h2 class="inventory-title" id="titulo-servicios">Servicios</h2>
+          <p class="inventory-sub">Baño, corte, grooming… El empleado solo marca los que hizo; el precio sale de aquí.</p>
         </div>
       </div>
       <div class="workbench">
-        {animales.map(a => (
-          <form data-astro-reload method="post" class="animal-row animal-row-existing">
-            <input type="hidden" name="accion" value="animal" />
-            <input type="hidden" name="id" value={a.id} />
-            <label class="type-field">
-              <span class="field-label">Tipo de animal</span>
-              <input class="field" name="tipo" value={a.tipo} required />
-            </label>
-            <label>
-              <span class="field-label">Cantidad</span>
-              <input class="field" name="cantidad" type="number" min="0" step="1" value={a.cantidad} required />
+        {servicios.map(s => (
+          <form data-astro-reload method="post" class="serv-row">
+            <input type="hidden" name="accion" value="servicio" />
+            <input type="hidden" name="id" value={s.id} />
+            <label class="serv-nombre">
+              <span class="field-label">Servicio</span>
+              <input class="field" name="nombre" value={s.nombre} required />
             </label>
             <label>
               <span class="field-label">Precio ₡</span>
               <span class="money-wrap">
                 <span class="currency" aria-hidden="true">₡</span>
-                <input class="field" name="precio" type="number" min="0" step="1" value={a.precio} required aria-label="Precio en colones" />
+                <input class="field" name="precio" type="number" min="1" step="1" value={s.precio} required aria-label="Precio en colones" />
               </span>
             </label>
             <button class="action row-save">Guardar</button>
-            <button class="action eliminar" name="eliminar" value="1" formnovalidate data-confirm={`¿Eliminar ${a.tipo}? Sus ventas anteriores se conservan en el historial.`} aria-label={`Eliminar ${a.tipo}`}><i aria-hidden="true" class="ti ti-trash"></i><span class="txt-el">Eliminar</span></button>
+            <button class="action eliminar" name="eliminar" value="1" formnovalidate data-confirm={`¿Eliminar el servicio ${s.nombre}? Sus ventas anteriores se conservan en el historial.`} aria-label={`Eliminar ${s.nombre}`}><i aria-hidden="true" class="ti ti-trash"></i><span class="txt-el">Eliminar</span></button>
           </form>
         ))}
+        {!servicios.length && <p class="vacio-seccion">Todavía no hay servicios. Agregue el primero abajo.</p>}
         <form data-astro-reload method="post" class="add-row">
-          <input type="hidden" name="accion" value="animal" />
-          <h3 class="add-row-title">Agregar animal</h3>
-          <div class="animal-row animal-row-nueva">
-            <label class="type-field">
-              <span class="field-label">Tipo de animal</span>
-              <input class="field" name="tipo" placeholder="Nombre del animal" required />
-            </label>
-            <label>
-              <span class="field-label">Cantidad</span>
-              <input class="field" name="cantidad" type="number" min="0" step="1" placeholder="Cantidad" required />
+          <input type="hidden" name="accion" value="servicio" />
+          <h3 class="add-row-title">Agregar servicio</h3>
+          <div class="serv-row serv-nueva">
+            <label class="serv-nombre">
+              <span class="field-label">Servicio</span>
+              <input class="field" name="nombre" placeholder="Ej. Baño, corte de uñas" required />
             </label>
             <label>
               <span class="field-label">Precio ₡</span>
               <span class="money-wrap">
                 <span class="currency" aria-hidden="true">₡</span>
-                <input class="field" name="precio" type="number" min="0" step="1" placeholder="Precio" required aria-label="Precio en colones" />
+                <input class="field" name="precio" type="number" min="1" step="1" placeholder="Precio" required aria-label="Precio en colones" />
               </span>
             </label>
             <button class="action action-primary row-save">Agregar</button>
@@ -210,7 +302,8 @@ for (const v of ventas) {
       </div>
     </section>
 
-    <section aria-labelledby="people-title" class="people">
+    <section aria-labelledby="people-title" class="people sec-empleados">
+      <div class="people-izq">
       <h2 class="people-title" id="people-title">Empleados</h2>
       <p class="people-copy">Personas con acceso al registro de ventas.</p>
       {empleados.map(e => (
@@ -238,6 +331,7 @@ for (const v of ventas) {
         </label>
         <button class="action">Agregar</button>
       </form>
+      </div>
 
       <div class="codigo-local">
         <h3 class="employee-add-title">Código del local</h3>
@@ -309,13 +403,28 @@ for (const v of ventas) {
   @media (max-width: 760px) { .desliza { display: flex; } }
   .fecha { color: var(--muted); font-variant-numeric: tabular-nums; }
   .fuerte { font-weight: 700; }
+  .n-factura { color: var(--deep); font: 700 13px 'Space Grotesk', sans-serif; letter-spacing: .08em; text-decoration: underline; text-underline-offset: 3px; }
+  .n-factura:hover { color: var(--green); }
   .metodo { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
   .metodo.sinpe { background: #e8f0fb; color: #2b5a99; }
   .metodo.tarjeta { background: #f1ecf8; color: #634594; }
+  .clase { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #eef2ef; color: #4d5f54; }
+  .clase.producto { background: #e5f0f6; color: #2d5b7a; }
+  .clase.servicio { background: #fdf1dc; color: #8a5a12; }
   .factura { display: inline-flex; align-items: center; gap: 4px; color: var(--deep); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
   .sin-factura { color: #9aa79f; }
 
-  .workspace { display: grid; grid-template-columns: minmax(0, 1.72fr) minmax(300px, .76fr); gap: 36px; align-items: start; }
+  .workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: 44px; align-items: start; }
+  .sec-animales { order: 1; }
+  .sec-servicios { order: 2; }
+  .sec-productos { order: 3; }
+  .sec-empleados { order: 4; }
+  .vacio-seccion { margin: 0; padding: 20px 18px; color: var(--muted); font-size: 14px; }
+  .serv-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, .8fr) 112px 48px; gap: 14px; align-items: end; padding: 16px 18px; background: #fbfcfb; border-top: 1px solid #e1e7e2; }
+  .serv-row:first-child { border-top: 0; }
+  .serv-row > * { min-width: 0; }
+  .serv-row label { display: block; }
+  .serv-nueva { grid-template-columns: minmax(0, 1.4fr) minmax(0, .8fr) 112px; padding: 0; background: transparent; border-top: 0; }
   .inventory-head { display: flex; justify-content: space-between; align-items: end; gap: 20px; padding: 0 0 19px; }
   .inventory-title { margin: 0; font: 600 29px/1.12 'Space Grotesk', sans-serif; letter-spacing: -.045em; }
   .inventory-sub { margin: 8px 0 0; color: var(--muted); font-size: 15px; line-height: 1.5; }
@@ -337,7 +446,9 @@ for (const v of ventas) {
   .add-row { padding: 18px; background: var(--warm); border-top: 1px dashed #c6c4b8; }
   .add-row-title { margin: 0 0 12px; font: 600 16px 'Space Grotesk', sans-serif; color: #2c4034; }
 
-  .people { padding: 24px; background: var(--deep); color: #fff; border-radius: 3px; align-self: stretch; }
+  .people { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); padding: 30px 34px; background: var(--deep); color: #fff; border-radius: 3px; }
+  .people-izq { padding-right: 56px; min-width: 0; }
+  .people .codigo-local { margin-top: 0; padding-top: 0; border-top: 0; padding-left: 56px; border-left: 1px solid rgba(255, 255, 255, .25); min-width: 0; align-self: start; }
   .people-title { margin: 0; font: 600 28px/1.12 'Space Grotesk', sans-serif; letter-spacing: -.04em; }
   .people-copy { margin: 8px 0 21px; color: #f0f5f1; font-size: 15px; line-height: 1.5; }
   .person-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px 0; border-top: 1px solid rgba(255, 255, 255, .25); }
@@ -363,7 +474,10 @@ for (const v of ventas) {
   .employee-add .action:hover { background: #fff; border-color: #fff; }
 
   @media (max-width: 900px) {
-    .workspace { grid-template-columns: 1fr; gap: 34px; }
+    .workspace { gap: 34px; }
+    .people { grid-template-columns: 1fr; padding: 24px; }
+    .people-izq { padding-right: 0; }
+    .people .codigo-local { padding-left: 0; border-left: 0; margin-top: 22px; padding-top: 18px; border-top: 1px solid rgba(255, 255, 255, .25); }
     .sales-empty { grid-template-columns: 155px minmax(0, 1fr); }
     .history-link, .sales-empty form { grid-column: 2; justify-self: start; }
     .history-link { margin-left: -12px; }
@@ -383,6 +497,13 @@ for (const v of ventas) {
     .animal-row-existing { padding: 17px 13px; }
     .animal-row-existing { grid-template-columns: 1fr 1fr; }
     .animal-row .type-field { grid-column: 1 / -1; }
+    .serv-row { grid-template-columns: 1fr 1fr; gap: 12px; padding: 17px 13px; }
+    .serv-nombre { grid-column: 1 / -1; }
+    .serv-row .row-save, .serv-row .eliminar { width: 100%; }
+    .serv-row .eliminar { grid-column: 1 / -1; }
+    .serv-nueva { grid-template-columns: 1fr 1fr; padding: 0; }
+    .serv-nueva .row-save { grid-column: 1 / -1; }
+    .serv-nueva .serv-nombre { grid-column: 1 / -1; }
     .animal-row-nueva .row-save { grid-column: 1 / -1; width: 100%; }
     .animal-row-existing .row-save, .animal-row-existing .eliminar { width: 100%; }
     .eliminar { gap: 8px; padding: 0 15px; }

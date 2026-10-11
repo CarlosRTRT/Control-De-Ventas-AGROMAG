@@ -16,7 +16,8 @@ PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS animales (
   id INTEGER PRIMARY KEY, tipo TEXT NOT NULL UNIQUE COLLATE NOCASE,
   cantidad INTEGER NOT NULL CHECK (cantidad >= 0), precio INTEGER NOT NULL CHECK (precio >= 0),
-  activo INTEGER NOT NULL DEFAULT 1); -- 0 = eliminado (se conserva para el historial de ventas)
+  activo INTEGER NOT NULL DEFAULT 1, -- 0 = eliminado (se conserva para el historial de ventas)
+  clase TEXT NOT NULL DEFAULT 'animal'); -- 'animal' o 'producto' (aserrín, borucha, etc.)
 CREATE TABLE IF NOT EXISTS empleados (
   id INTEGER PRIMARY KEY, nombre TEXT NOT NULL UNIQUE COLLATE NOCASE, activo INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS ventas (
@@ -27,11 +28,16 @@ CREATE TABLE IF NOT EXISTS ventas (
   cierre TEXT, -- NULL = venta del día aún sin cerrar
   token TEXT); -- código único del formulario: evita registrar dos veces la misma venta
 CREATE INDEX IF NOT EXISTS ventas_fecha ON ventas (fecha);
-CREATE TABLE IF NOT EXISTS servicios ( -- grooming: lo que el empleado cobró, sin inventario
+CREATE TABLE IF NOT EXISTS catalogo_servicios ( -- servicios que el dueño ofrece, con su precio (baño, corte, etc.)
+  id INTEGER PRIMARY KEY, nombre TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  precio INTEGER NOT NULL CHECK (precio > 0), activo INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS servicios ( -- servicios vendidos: lo que se cobró, sin inventario
   id INTEGER PRIMARY KEY, fecha TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   empleado_id INTEGER NOT NULL REFERENCES empleados, monto INTEGER NOT NULL CHECK (monto > 0),
-  metodo TEXT NOT NULL CHECK (metodo IN ('sinpe','tarjeta')), cierre TEXT, token TEXT);
-CREATE UNIQUE INDEX IF NOT EXISTS servicios_token ON servicios (token);
+  metodo TEXT NOT NULL CHECK (metodo IN ('sinpe','tarjeta')), cierre TEXT, token TEXT, nombre TEXT);
+-- Una venta con varios servicios deja una fila por servicio con el mismo código.
+DROP INDEX IF EXISTS servicios_token;
+CREATE INDEX IF NOT EXISTS servicios_token_idx ON servicios (token);
 CREATE TABLE IF NOT EXISTS ajustes (clave TEXT PRIMARY KEY, valor TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS accesos ( -- aparatos de empleados autorizados con el código del local
   token TEXT PRIMARY KEY, expira TEXT NOT NULL);
@@ -45,6 +51,11 @@ if (!db.prepare("SELECT 1 FROM pragma_table_info('ventas') WHERE name = 'token'"
   db.exec('ALTER TABLE ventas ADD COLUMN token TEXT');
 // Una venta con varios animales deja una fila por animal con el mismo código: por eso el índice ya no es único.
 db.exec('DROP INDEX IF EXISTS ventas_token; CREATE INDEX IF NOT EXISTS ventas_token_idx ON ventas (token)');
+// Bases anteriores a los productos y a los servicios con nombre
+if (!db.prepare("SELECT 1 FROM pragma_table_info('animales') WHERE name = 'clase'").get())
+  db.exec("ALTER TABLE animales ADD COLUMN clase TEXT NOT NULL DEFAULT 'animal'");
+if (!db.prepare("SELECT 1 FROM pragma_table_info('servicios') WHERE name = 'nombre'").get())
+  db.exec('ALTER TABLE servicios ADD COLUMN nombre TEXT');
 
 // Compara el PIN del dueño en tiempo constante.
 export const pinCorrecto = (pin: string) => {
@@ -53,12 +64,12 @@ export const pinCorrecto = (pin: string) => {
   return (process.env.ADMIN_PIN || '').length >= 4 && timingSafeEqual(h(pin), h(process.env.ADMIN_PIN!));
 };
 
-// Ventas de animales y servicios (grooming) en una sola lista, con las mismas columnas.
+// Ventas de animales/productos y servicios en una sola lista, con las mismas columnas.
 export const MOVIMIENTOS_SQL = `SELECT * FROM (
-  SELECT 'v' AS origen, v.id, v.fecha, v.cantidad, v.precio_unit, v.metodo, v.factura, v.cierre, a.tipo, e.nombre
+  SELECT 'v' AS origen, v.id, v.fecha, v.cantidad, v.precio_unit, v.metodo, v.factura, v.cierre, a.tipo, e.nombre, a.clase AS clase, v.token AS token
     FROM ventas v JOIN animales a ON a.id = v.animal_id JOIN empleados e ON e.id = v.empleado_id
   UNION ALL
-  SELECT 's', s.id, s.fecha, 1, s.monto, s.metodo, NULL, s.cierre, 'Grooming', e.nombre
+  SELECT 's', s.id, s.fecha, 1, s.monto, s.metodo, NULL, s.cierre, COALESCE(s.nombre, 'Grooming'), e.nombre, 'servicio', s.token
     FROM servicios s JOIN empleados e ON e.id = s.empleado_id
 )`;
 

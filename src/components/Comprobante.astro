@@ -1,0 +1,44 @@
+---
+import { crc } from '../lib/db';
+import { negocio } from '../lib/negocio';
+
+// Hoja del comprobante, tal como sale en la impresora térmica. La usan la vista del empleado y la del dueño.
+interface Props { datos: NonNullable<ReturnType<typeof import('../lib/comprobante').cargarComprobante>>; ancho: number }
+const { datos, ancho } = Astro.props;
+---
+<article class="papel" style={`width: ${ancho - 8}mm; font-size: ${ancho >= 80 ? 15 : 12}px`}>
+  <header class="centro">
+    <h2>{negocio.nombre}</h2>
+    {negocio.detalle && <p>{negocio.detalle}</p>}
+    {negocio.lugar && <p>{negocio.lugar}</p>}
+    {negocio.telefono && <p>Tel. {negocio.telefono}</p>}
+  </header>
+  <hr class="sep" />
+  <p class="centro"><b>COMPROBANTE DE VENTA</b></p>
+  <p class="fila"><span>Fecha:</span><span>{datos.fecha}</span></p>
+  <p class="fila"><span>Atendió:</span><span>{datos.nombre}</span></p>
+  <p class="fila"><span>N°:</span><span>{datos.numero}</span></p>
+  <hr class="sep" />
+  {datos.lineas.map(l => (
+    <div>
+      <p class="fila"><span>{l.texto}</span><span>{crc(l.importe)}</span></p>
+      {l.detalle && <p class="det">&nbsp;&nbsp;{l.detalle}</p>}
+    </div>
+  ))}
+  <hr class="sep" />
+  <p class="fila total"><span>TOTAL</span><span>{crc(datos.total)}</span></p>
+  <p class="fila"><span>Pago:</span><span>{datos.metodo === 'sinpe' ? 'SINPE Móvil' : 'Tarjeta'}</span></p>
+  <hr class="sep" />
+  {negocio.pie && <p class="centro">{negocio.pie}</p>}
+</article>
+
+<style is:global>
+  .papel { margin: 0 auto 22px; padding: 5mm 3mm 8mm; background: #fff; color: #000; border: 1px solid #c8d1cb; box-shadow: 0 10px 30px rgba(29, 42, 36, .08); font: 1em/1.4 'Courier New', Courier, monospace; -webkit-text-stroke: .35px #000; }
+  .papel p { margin: 0; }
+  .papel h2 { margin: 0; font: 700 1.45em/1.2 'Courier New', monospace; letter-spacing: .08em; text-align: center; }
+  .papel .centro { text-align: center; }
+  .papel .sep { border: 0; border-top: 1px dashed #000; margin: 8px 0; }
+  .papel .fila { display: flex; justify-content: space-between; gap: 8px; }
+  .papel .det { font-size: .9em; }
+  .papel .total { font-size: 1.25em; font-weight: 700; }
+</style>

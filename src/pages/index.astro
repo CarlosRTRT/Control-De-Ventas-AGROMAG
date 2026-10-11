@@ -4,6 +4,8 @@ import { ClientRouter } from 'astro:transitions';
 import { randomBytes } from 'node:crypto';
 import { db, crc, TOKEN_RE } from '../lib/db';
 import { negocio } from '../lib/negocio';
+import Comprobante from '../components/Comprobante.astro';
+import { cargarComprobante, numeroDe } from '../lib/comprobante';
 
 const back = (msg: string, ok = false, recibo = '') => Astro.redirect(`/?msg=${encodeURIComponent(msg)}${ok ? '&ok' : ''}${recibo ? '&recibo=' + recibo : ''}`, 303);
 
@@ -19,12 +21,14 @@ if (Astro.request.method === 'POST') {
     if (!Number.isInteger(cantidades[i]) || cantidades[i] < 1) cantidadMala = true;
     pedidos.set(id, (pedidos.get(id) ?? 0) + cantidades[i]); // el mismo animal repetido se suma
   });
-  const grooming = f.get('grooming') === '1', monto = grooming ? Number(f.get('grooming_monto')) : 0;
+  // Servicios: el empleado solo marca los de la lista del dueño; el precio sale del catálogo.
+  const elegidos = [...new Set(f.getAll('servicio').map(Number).filter(Boolean))]
+    .map(id => db.prepare('SELECT * FROM catalogo_servicios WHERE id = ? AND activo = 1').get(id) as any);
   const token = String(f.get('token') || '').slice(0, 64) || null;
   if (!db.prepare('SELECT 1 FROM empleados WHERE id = ? AND activo = 1').get(empleadoId)) return back('Elija quién hizo la venta');
-  if (!pedidos.size && !grooming) return back('Elija un animal o marque grooming');
+  if (!pedidos.size && !elegidos.length) return back('Elija un animal, un producto o un servicio');
   if (cantidadMala) return back('Cantidad inválida');
-  if (grooming && (!Number.isInteger(monto) || monto < 1)) return back('Escriba cuánto cobró por el grooming');
+  if (elegidos.some(s => !s)) return back('Uno de los servicios ya no está disponible');
   if (metodo !== 'sinpe' && metodo !== 'tarjeta') return back('Elija SINPE o tarjeta');
   // Todo síncrono desde aquí: ninguna otra petición se intercala en la transacción.
   db.exec('BEGIN IMMEDIATE');
@@ -46,11 +50,11 @@ if (Astro.request.method === 'POST') {
         .run(empleadoId, animalId, cant, a.precio, metodo, token);
       partes.push(`${cant} ${a.tipo} — ${crc(cant * a.precio)}`);
     }
-    if (grooming) {
-      // Mismo código que la venta del animal (viven en tablas distintas): un solo comprobante reúne todo.
-      db.prepare('INSERT INTO servicios (empleado_id, monto, metodo, token) VALUES (?,?,?,?)')
-        .run(empleadoId, monto, metodo, token);
-      partes.push(`grooming ${crc(monto)}`);
+    for (const s of elegidos) {
+      // Mismo código que el resto de la venta (viven en tablas distintas): un solo comprobante reúne todo.
+      db.prepare('INSERT INTO servicios (empleado_id, monto, metodo, token, nombre) VALUES (?,?,?,?,?)')
+        .run(empleadoId, s.precio, metodo, token, s.nombre);
+      partes.push(`${s.nombre} ${crc(s.precio)}`);
     }
     db.exec('COMMIT');
     return back(`Venta registrada: ${partes.join(' + ')}`, true, token && TOKEN_RE.test(token) ? token : '');
@@ -61,27 +65,14 @@ if (Astro.request.method === 'POST') {
 }
 
 const empleados = db.prepare('SELECT * FROM empleados WHERE activo = 1 ORDER BY nombre').all() as any[];
-const animales = db.prepare('SELECT * FROM animales WHERE cantidad > 0 AND activo = 1 ORDER BY tipo').all() as any[];
+const inventario = db.prepare('SELECT * FROM animales WHERE cantidad > 0 AND activo = 1 ORDER BY tipo').all() as any[];
+const animales = inventario.filter(a => a.clase !== 'producto');
+const productos = inventario.filter(a => a.clase === 'producto');
+const servicios = db.prepare('SELECT * FROM catalogo_servicios WHERE activo = 1 ORDER BY nombre').all() as any[];
 const tokenVenta = randomBytes(16).toString('hex');
 const msg = Astro.url.searchParams.get('msg');
 const reciboParam = Astro.url.searchParams.get('recibo') ?? '';
-const comprobante = (() => {
-  if (!TOKEN_RE.test(reciboParam)) return null;
-  const ventas = db.prepare(`SELECT v.*, a.tipo, e.nombre FROM ventas v JOIN animales a ON a.id = v.animal_id
-    JOIN empleados e ON e.id = v.empleado_id WHERE v.token = ?`).all(reciboParam) as any[];
-  const servicio = db.prepare(`SELECT s.*, e.nombre FROM servicios s JOIN empleados e ON e.id = s.empleado_id WHERE s.token = ?`).get(reciboParam) as any;
-  const base = ventas[0] ?? servicio;
-  if (!base) return null;
-  const lineas = [
-    ...ventas.map(v => ({ texto: `${v.cantidad} x ${v.tipo}`, detalle: v.cantidad > 1 ? `${crc(v.precio_unit)} c/u` : '', importe: v.cantidad * v.precio_unit })),
-    ...(servicio ? [{ texto: 'Grooming', detalle: '', importe: servicio.monto }] : []),
-  ];
-  const [dia, hora] = base.fecha.split(' ');
-  return {
-    nombre: base.nombre, metodo: base.metodo, lineas, total: lineas.reduce((n, l) => n + l.importe, 0),
-    fecha: `${dia.split('-').reverse().join('/')} ${hora.slice(0, 5)}`, numero: reciboParam.slice(-6).toUpperCase(),
-  };
-})();
+const comprobante = cargarComprobante(reciboParam);
 const verHistorial = !comprobante && Astro.url.searchParams.get('ver') === 'historial';
 const desdeHistorial = Astro.url.searchParams.get('desde') === 'historial';
 // Historial de ventas desde el último cierre: al hacer el cierre el dueño, esta lista queda vacía.
@@ -89,12 +80,12 @@ const historial = (() => {
   if (!verHistorial) return [] as any[];
   const ventas = db.prepare(`SELECT v.token, v.fecha, v.cantidad, v.precio_unit, v.metodo, a.tipo, e.nombre FROM ventas v
     JOIN animales a ON a.id = v.animal_id JOIN empleados e ON e.id = v.empleado_id WHERE v.cierre IS NULL AND v.token IS NOT NULL`).all() as any[];
-  const servicios = db.prepare(`SELECT s.token, s.fecha, s.monto, s.metodo, e.nombre FROM servicios s
+  const serviciosVendidos = db.prepare(`SELECT s.token, s.fecha, s.monto, s.metodo, s.nombre AS servicio, e.nombre FROM servicios s
     JOIN empleados e ON e.id = s.empleado_id WHERE s.cierre IS NULL AND s.token IS NOT NULL`).all() as any[];
   const porToken = new Map<string, any>();
   const entrada = (r: any) => porToken.get(r.token) ?? porToken.set(r.token, { token: r.token, fecha: r.fecha, nombre: r.nombre, metodo: r.metodo, partes: [] as string[], total: 0 }).get(r.token);
   for (const v of ventas) { const e = entrada(v); e.partes.push(`${v.cantidad} x ${v.tipo}`); e.total += v.cantidad * v.precio_unit; }
-  for (const s of servicios) { const e = entrada(s); e.partes.push('Grooming'); e.total += s.monto; }
+  for (const s of serviciosVendidos) { const e = entrada(s); e.partes.push(s.servicio ?? 'Grooming'); e.total += s.monto; }
   return [...porToken.values()].sort((a, b) => b.fecha.localeCompare(a.fecha));
 })();
 const pedido = Number(Astro.url.searchParams.get('ancho'));
@@ -148,31 +139,7 @@ const ok = Astro.url.searchParams.has('ok');
               </div>
             )}
 
-          <article class="papel" style={`width: ${ancho - 8}mm; font-size: ${ancho >= 80 ? 15 : 12}px`}>
-            <header class="centro">
-              <h2>{negocio.nombre}</h2>
-              {negocio.detalle && <p>{negocio.detalle}</p>}
-              {negocio.lugar && <p>{negocio.lugar}</p>}
-              {negocio.telefono && <p>Tel. {negocio.telefono}</p>}
-            </header>
-            <hr class="sep" />
-            <p class="centro"><b>COMPROBANTE DE VENTA</b></p>
-            <p class="fila"><span>Fecha:</span><span>{comprobante.fecha}</span></p>
-            <p class="fila"><span>Atendió:</span><span>{comprobante.nombre}</span></p>
-            <p class="fila"><span>N°:</span><span>{comprobante.numero}</span></p>
-            <hr class="sep" />
-            {comprobante.lineas.map(l => (
-              <div>
-                <p class="fila"><span>{l.texto}</span><span>{crc(l.importe)}</span></p>
-                {l.detalle && <p class="det">&nbsp;&nbsp;{l.detalle}</p>}
-              </div>
-            ))}
-            <hr class="sep" />
-            <p class="fila total"><span>TOTAL</span><span>{crc(comprobante.total)}</span></p>
-            <p class="fila"><span>Pago:</span><span>{comprobante.metodo === 'sinpe' ? 'SINPE Móvil' : 'Tarjeta'}</span></p>
-            <hr class="sep" />
-            {negocio.pie && <p class="centro">{negocio.pie}</p>}
-          </article>
+          <Comprobante datos={comprobante} ancho={ancho} />
 
             <div class="acciones no-imprimir">
               <button type="button" class="cash-submit" data-imprimir><i aria-hidden="true" class="ti ti-printer"></i>Imprimir factura</button>
@@ -191,7 +158,7 @@ const ok = Astro.url.searchParams.has('ok');
                 {historial.map(h => (
                   <li class="entrada">
                     <div class="entrada-info">
-                      <span class="entrada-hora">{h.fecha.slice(11, 16)}</span>
+                      <span class="entrada-hora">{h.fecha.slice(11, 16)} · N° {numeroDe(h.token)}</span>
                       <strong>{h.partes.join(' + ')}</strong>
                       <span class="entrada-sub">{h.nombre} · {h.metodo === 'sinpe' ? 'SINPE' : 'Tarjeta'}</span>
                     </div>
@@ -243,10 +210,15 @@ const ok = Astro.url.searchParams.has('ok');
                       <div id="lineas">
                         <div class="linea">
                           <div class="linea-animal">
-                            <label class="field-label">Animal</label>
-                            <select class="cash-select" name="animal" aria-label="Animal">
-                              <option value="">— Sin animal —</option>
-                              {animales.map(a => <option value={a.id} data-stock={a.cantidad}>{a.tipo} — {crc(a.precio)} (quedan {a.cantidad})</option>)}
+                            <label class="field-label">Animal o producto</label>
+                            <select class="cash-select" name="animal" aria-label="Animal o producto">
+                              <option value="">— Ninguno —</option>
+                              {animales.length > 0 && <optgroup label="Animales">
+                                {animales.map(a => <option value={a.id} data-stock={a.cantidad}>{a.tipo} — {crc(a.precio)} (quedan {a.cantidad})</option>)}
+                              </optgroup>}
+                              {productos.length > 0 && <optgroup label="Productos">
+                                {productos.map(a => <option value={a.id} data-stock={a.cantidad}>{a.tipo} — {crc(a.precio)} (quedan {a.cantidad})</option>)}
+                              </optgroup>}
                             </select>
                           </div>
                           <div class="linea-cantidad" hidden>
@@ -260,20 +232,24 @@ const ok = Astro.url.searchParams.has('ok');
                           <button type="button" class="linea-quitar" hidden aria-label="Quitar este animal">Quitar</button>
                         </div>
                       </div>
-                      <p class="conditional-note" id="nota-cantidad">La cantidad se habilita al elegir un animal.</p>
-                      <button type="button" class="agregar-linea" id="agregar-linea" hidden><i aria-hidden="true" class="ti ti-plus"></i>Agregar otro animal</button>
+                      <p class="conditional-note" id="nota-cantidad">La cantidad se habilita al elegir un animal o producto.</p>
+                      <button type="button" class="agregar-linea" id="agregar-linea" hidden><i aria-hidden="true" class="ti ti-plus"></i>Agregar otro animal o producto</button>
                     </div>
                   </section>
 
                   <section class="grooming-area">
-                    <label class="grooming-toggle">
-                      <input type="checkbox" name="grooming" value="1" id="grooming" />
-                      <span>Incluir grooming</span>
-                    </label>
-                    <div class="grooming-amount" id="bloque-monto" hidden>
-                      <label class="field-label" for="grooming-monto">¿Cuánto cobró por el grooming?</label>
-                      <input class="cash-input" id="grooming-monto" name="grooming_monto" type="number" min="1" step="1" inputmode="numeric" placeholder="Monto" />
-                    </div>
+                    <p class="area-titulo">Servicios</p>
+                    {servicios.length ? (
+                      <div class="servicios-lista">
+                        {servicios.map(s => (
+                          <label class="grooming-toggle">
+                            <input type="checkbox" name="servicio" value={s.id} />
+                            <span>{s.nombre}</span>
+                            <b class="serv-precio">{crc(s.precio)}</b>
+                          </label>
+                        ))}
+                      </div>
+                    ) : <p class="conditional-note">El dueño aún no ha agregado servicios.</p>}
                   </section>
                 </div>
 
@@ -317,8 +293,6 @@ const ok = Astro.url.searchParams.has('ok');
       const form = document.querySelector<HTMLFormElement>('#venta');
       if (form) {
         const lineas = form.querySelector<HTMLElement>('#lineas')!;
-        const grooming = form.querySelector<HTMLInputElement>('#grooming')!;
-        const monto = form.querySelector<HTMLInputElement>('#grooming-monto')!;
         const nota = form.querySelector<HTMLElement>('#nota-cantidad')!;
         const agregar = form.querySelector<HTMLButtonElement>('#agregar-linea')!;
         const molde = lineas.querySelector<HTMLElement>('.linea')!.cloneNode(true) as HTMLElement; // línea en blanco para "Agregar otro"
@@ -335,23 +309,21 @@ const ok = Astro.url.searchParams.has('ok');
           else { cant.removeAttribute('max'); cant.setCustomValidity(''); }
         };
 
-        // Muestra u oculta lo que depende de lo elegido. Se debe elegir al menos un animal o el grooming.
+        // Muestra u oculta lo que depende de lo elegido. Se debe elegir al menos un animal, producto o servicio.
         const sincronizar = () => {
           const todas = selects();
+          const hayServicio = !!form.querySelector('input[name=servicio]:checked');
           const elegidos = todas.map(s => s.value).filter(Boolean);
           todas.forEach((s, i) => {
             const linea = s.closest<HTMLElement>('.linea')!;
             linea.querySelector<HTMLElement>('.linea-cantidad')!.hidden = !s.value;
             linea.querySelector<HTMLElement>('.linea-quitar')!.hidden = todas.length < 2;
-            s.required = i === 0 && !elegidos.length && !grooming.checked;
+            s.required = i === 0 && !elegidos.length && !hayServicio;
             // un animal ya elegido en otra línea no se puede repetir
             [...s.options].forEach(o => { o.disabled = !!o.value && o.value !== s.value && elegidos.includes(o.value); });
           });
           nota.hidden = elegidos.length > 0;
           agregar.hidden = !elegidos.length || todas.some(s => !s.value) || elegidos.length >= totalAnimales;
-          form.querySelector<HTMLElement>('#bloque-monto')!.hidden = !grooming.checked;
-          monto.disabled = !grooming.checked;
-          monto.required = grooming.checked;
         };
 
         lineas.addEventListener('change', e => {
@@ -382,12 +354,12 @@ const ok = Astro.url.searchParams.has('ok');
         });
         agregar.addEventListener('click', () => {
           const nueva = molde.cloneNode(true) as HTMLElement;
-          nueva.querySelector('.field-label')!.textContent = 'Otro animal';
+          nueva.querySelector('.field-label')!.textContent = 'Otro animal o producto';
           lineas.append(nueva);
           sincronizar();
           nueva.querySelector('select')!.focus();
         });
-        grooming.addEventListener('change', () => { sincronizar(); if (grooming.checked) monto.focus(); });
+        form.addEventListener('change', e => { if ((e.target as HTMLInputElement).name === 'servicio') sincronizar(); });
         sincronizar();
       }
       });
@@ -454,7 +426,9 @@ const ok = Astro.url.searchParams.has('ok');
   .grooming-area { display: flex; flex-direction: column; justify-content: center; padding: 28px 30px; border-left: 1px solid var(--line); background: #f1efe7; }
   .grooming-toggle { display: flex; align-items: center; gap: 13px; min-height: 52px; color: var(--ink); font-size: 17px; font-weight: 600; cursor: pointer; }
   .grooming-toggle input { width: 20px; height: 20px; margin: 0; accent-color: var(--green); }
-  .grooming-amount { margin-top: 15px; }
+  .area-titulo { margin: 0 0 8px; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+  .servicios-lista { display: grid; gap: 2px; }
+  .grooming-toggle .serv-precio { margin-left: auto; font: 600 16px var(--display); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
   .payment-row { display: grid; grid-template-columns: minmax(220px, .55fr) minmax(0, 1fr); gap: 48px; align-items: center; padding: 26px 28px; border-top: 1px solid var(--line); }
   .payment-row fieldset { display: flex; align-items: center; gap: 10px; min-width: 0; margin: 0; padding: 0; border: 0; }
@@ -495,14 +469,6 @@ const ok = Astro.url.searchParams.has('ok');
   .mini.principal { background: var(--green); border-color: var(--green); color: #fff; }
   .mini.principal:hover { background: var(--green-deep); }
 
-  .papel { margin: 0 auto 22px; padding: 5mm 3mm 8mm; background: #fff; color: #000; border: 1px solid var(--line); box-shadow: var(--shadow); font: 1em/1.4 'Courier New', Courier, monospace; -webkit-text-stroke: .35px #000; }
-  .papel p { margin: 0; }
-  .papel h2 { margin: 0; font: 700 1.45em/1.2 'Courier New', monospace; letter-spacing: .08em; text-align: center; }
-  .papel .centro { text-align: center; }
-  .papel .sep { border: 0; border-top: 1px dashed #000; margin: 8px 0; }
-  .papel .fila { display: flex; justify-content: space-between; gap: 8px; }
-  .papel .det { font-size: .9em; }
-  .papel .total { font-size: 1.25em; font-weight: 700; }
   .acciones { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
   .volver { display: inline-flex; align-items: center; min-height: 60px; padding: 0 28px; border: 1px solid var(--line-strong); border-radius: 2px; color: var(--green-deep); font-weight: 700; font-size: 16px; text-decoration: none; }
   .volver:hover { background: var(--green-soft); }

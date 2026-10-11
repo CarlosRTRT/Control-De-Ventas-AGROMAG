@@ -1,0 +1,40 @@
+---
+// El dueño ve (e imprime) cualquier factura sin salir del panel. Protegida por el PIN del dueño (ver middleware).
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import Comprobante from '../../../components/Comprobante.astro';
+import { cargarComprobante } from '../../../lib/comprobante';
+import { negocio } from '../../../lib/negocio';
+
+const datos = cargarComprobante(Astro.params.token ?? '');
+if (!datos) return Astro.redirect('/admin/historial?msg=' + encodeURIComponent('No se encontró esa factura'), 303);
+const pedido = Number(Astro.url.searchParams.get('ancho'));
+const ancho = [58, 80].includes(pedido) ? pedido : negocio.anchoPapel; // milímetros del rollo
+---
+<AdminLayout title={`Factura N° ${datos.numero}`} activo="historial">
+  <style set:html={`@page { size: ${ancho}mm auto; margin: 0; }`} />
+  <div class="cabecera-factura no-imprimir">
+    <div>
+      <h1 class="agro-title">Factura N° {datos.numero}</h1>
+      <p class="agro-intro">Así la recibió el cliente. Puede volver a imprimirla.</p>
+    </div>
+    <div class="botones-factura">
+      <button type="button" class="action action-primary" onclick="print()"><i aria-hidden="true" class="ti ti-printer"></i>Imprimir factura</button>
+      <a class="action" href="/admin/historial" onclick="if (history.length > 1) { history.back(); return false; }">Volver</a>
+    </div>
+  </div>
+  <Comprobante datos={datos} ancho={ancho} />
+</AdminLayout>
+
+<style is:global>
+  .cabecera-factura { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; flex-wrap: wrap; padding-bottom: 25px; margin-bottom: 28px; border-bottom: 1px solid var(--line); }
+  .cabecera-factura .agro-title { margin: 0; font: 600 clamp(30px, 3.6vw, 44px)/1.05 'Space Grotesk', sans-serif; letter-spacing: -.055em; }
+  .cabecera-factura .agro-intro { margin: 10px 0 0; color: var(--muted); font-size: 16px; }
+  .botones-factura { display: flex; gap: 10px; flex-wrap: wrap; }
+  @media (max-width: 620px) { .botones-factura { width: 100%; } .botones-factura > * { flex: 1; } }
+  @media print {
+    html, body, .agro-admin { background: #fff; }
+    .agro-header, .no-imprimir, .admin-footer, .aviso { display: none !important; }
+    .agro-main { width: auto; max-width: none; margin: 0; padding: 0; }
+    .papel { margin: 0; border: 0; box-shadow: none; padding-bottom: 12mm; }
+  }
+</style>

@@ -24,6 +24,7 @@ try {
   const admin = await login('clave123');
   await post(admin, '/admin', new URLSearchParams({ accion: 'animal', tipo: 'Perro', cantidad: '3', precio: '50000' }));
   await post(admin, '/admin', new URLSearchParams({ accion: 'empleado', nombre: 'Ana' }));
+  for (const [nombre, precio] of [['Grooming', '8000'], ['Baño', '5000'], ['Corte', '3000']]) await post(admin, '/admin', new URLSearchParams({ accion: 'servicio', nombre, precio }));
 
   // Acceso del equipo: la página de ventas pide el código del local
   const sinCodigo = await fetch(B + '/', { redirect: 'manual' });
@@ -111,46 +112,44 @@ try {
   assert.match(await unica(), /ya estaba registrada/);
   assert.equal(Number(await stock()), antes - 1);
 
-  // Grooming: solo, junto con un animal, validaciones, sin duplicados y dentro del cierre
+  // Servicios del catálogo: solos, junto con un animal, validaciones, sin duplicados y dentro del cierre
   {
     const { DatabaseSync: Db } = await import('node:sqlite');
     const bd = new Db(path.join(dir, 'ventas.db'));
     const servicios = () => bd.prepare('select count(*) n from servicios').get().n;
     const g = campos => { const f = new FormData(); Object.entries({ empleado: '1', metodo: 'tarjeta', ...campos }).forEach(([k, v]) => f.append(k, v)); return post(emp, '/', f); };
 
-    assert.match(await g({ animal: '', grooming: '1', grooming_monto: '8000' }), /Venta registrada: grooming ₡8/);
+    assert.match(await g({ animal: '', servicio: '1' }), /Venta registrada: Grooming ₡8/);
     assert.equal(servicios(), 1);
 
     const inventario = Number(await stock());
-    assert.match(await g({ animal: '1', cantidad: '1', grooming: '1', grooming_monto: '5000' }), /Venta registrada: 1 .* \+ grooming ₡5/);
+    assert.match(await g({ animal: '1', cantidad: '1', servicio: '2' }), /Venta registrada: 1 .* \+ Baño ₡5/);
     assert.equal(Number(await stock()), inventario - 1);
     assert.equal(servicios(), 2);
 
-    assert.match(await g({ animal: '' }), /Elija un animal o marque grooming/);
-    assert.match(await g({ animal: '', grooming: '1' }), /cuánto cobró/);
-    assert.match(await g({ animal: '', grooming: '1', grooming_monto: '0' }), /cuánto cobró/);
-    assert.match(await g({ animal: '', grooming: '1', grooming_monto: '12.5' }), /cuánto cobró/);
+    assert.match(await g({ animal: '' }), /Elija un animal, un producto o un servicio/);
+    assert.match(await g({ animal: '', servicio: '999' }), /ya no está disponible/); // servicio que no existe
     assert.match(await g({ animal: '1', cantidad: '0' }), /Cantidad inválida/);
     assert.equal(servicios(), 2);
 
     // Si no alcanza el animal, el grooming de esa misma venta tampoco se guarda
-    assert.match(await g({ animal: '1', cantidad: '9999', grooming: '1', grooming_monto: '7000' }), /No hay suficientes/);
+    assert.match(await g({ animal: '1', cantidad: '9999', servicio: '2' }), /No hay suficientes/);
     assert.equal(servicios(), 2);
 
     // El mismo formulario enviado dos veces (solo grooming) se registra una sola vez
-    assert.match(await g({ token: 'solo-grooming-1', animal: '', grooming: '1', grooming_monto: '3000' }), /Venta registrada/);
-    assert.match(await g({ token: 'solo-grooming-1', animal: '', grooming: '1', grooming_monto: '3000' }), /ya estaba registrada/);
+    assert.match(await g({ token: 'solo-grooming-1', animal: '', servicio: '3' }), /Venta registrada/);
+    assert.match(await g({ token: 'solo-grooming-1', animal: '', servicio: '3' }), /ya estaba registrada/);
     assert.equal(servicios(), 3);
 
     // Se ve en el panel, suma en los totales y entra al cierre
     const panelG = await fetch(B + '/admin', { headers: { cookie: admin } }).then(r => r.text());
-    assert.match(panelG, /<td[^>]*>Grooming<\/td>/);
+    for (const nombre of ['Grooming', 'Baño', 'Corte']) assert.match(panelG, new RegExp('<td[^>]*>' + nombre + '</td>'));
     const hV = /name="hasta" value="(\d+)"/.exec(panelG)[1], hS = /name="hasta_s" value="(\d+)"/.exec(panelG)[1];
     assert.match(await post(admin, '/admin', new URLSearchParams({ accion: 'cierre', hasta: hV, hasta_s: hS })), /Cierre hecho: \d+ venta/);
     assert.equal(bd.prepare('select count(*) n from servicios where cierre is null').get().n, 0);
     assert.match(await fetch(B + '/admin', { headers: { cookie: admin } }).then(r => r.text()), /No hay ventas pendientes/);
     const histG = await fetch(B + '/admin/historial', { headers: { cookie: admin } }).then(r => r.text());
-    assert.equal([...histG.matchAll(/<td[^>]*>Grooming<\/td>/g)].length, 3);
+    assert.equal([...histG.matchAll(/<td[^>]*>(Grooming|Baño|Corte)<\/td>/g)].length, 3);
     bd.close();
   }
 
@@ -160,22 +159,22 @@ try {
     const venta2 = campos => { const f = new FormData(); Object.entries({ empleado: '1', metodo: 'sinpe', ...campos }).forEach(([k, v]) => f.append(k, v)); return post(emp, '/', f); };
     const ver = (extra = '') => fetch(B + '/' + extra, { headers: { cookie: emp } }).then(r => r.text());
 
-    // Animal + grooming: la respuesta lleva al comprobante, que se ve sin sesión
+    // Animal + servicio: la respuesta lleva al comprobante, que se ve sin sesión
     const tokenA = hex + '1';
-    assert.match(await venta2({ token: tokenA, animal: '1', cantidad: '1', grooming: '1', grooming_monto: '5000' }), new RegExp('recibo=' + tokenA));
+    assert.match(await venta2({ token: tokenA, animal: '1', cantidad: '1', servicio: '2' }), new RegExp('recibo=' + tokenA));
     const prev = await ver('?recibo=' + tokenA);
     assert.match(prev, /COMPROBANTE DE VENTA/);
     assert.match(prev, /1 x /);
-    assert.match(prev, /Grooming/);
-    assert.match(prev, /TOTAL<\/span><span[^>]*>₡65[.,\s  ]000/); // 60 000 del animal + 5 000 de grooming
+    assert.match(prev, /Baño/);
+    assert.match(prev, /TOTAL<\/span><span[^>]*>₡65[.,\s  ]000/); // 60 000 del animal + 5 000 del servicio
     assert.match(prev, /SINPE/);
     assert.match(prev, /Imprimir factura/);
     assert.match(prev, /<a class="volver"[^>]*href="\/"/);
     assert.doesNotMatch(prev, /id="venta"/); // el formulario se reemplaza por la vista previa
 
-    // Solo grooming: sin líneas de animal; ancho de rollo elegido
+    // Solo un servicio: sin líneas de animal; ancho de rollo elegido
     const tokenG = hex + '2';
-    assert.match(await venta2({ token: tokenG, animal: '', grooming: '1', grooming_monto: '8000', metodo: 'tarjeta' }), new RegExp('recibo=' + tokenG));
+    assert.match(await venta2({ token: tokenG, animal: '', servicio: '1', metodo: 'tarjeta' }), new RegExp('recibo=' + tokenG));
     const soloG = await ver('?recibo=' + tokenG + '&ancho=58');
     assert.match(soloG, /Grooming/);
     assert.doesNotMatch(soloG, /\d x /);
@@ -201,8 +200,8 @@ try {
     assert.match(hist, /Ver factura/);
     assert.match(hist, /Imprimir/);
     assert.equal([...hist.matchAll(/class="entrada"/g)].length >= 2, true);
-    // Animal + grooming de la misma venta salen en UNA sola entrada
-    assert.match(hist, /1 x [^<]* \+ Grooming/);
+    // Animal + servicio de la misma venta salen en UNA sola entrada
+    assert.match(hist, /1 x [^<]* \+ Baño/);
     assert.doesNotMatch(hist, /id="venta"/);
 
     // Desde el historial, "Volver" regresa al historial
@@ -275,15 +274,141 @@ try {
     assert.equal(bd.prepare('select count(*) n from ventas where token = ?').get(t1).n, 2);
     assert.equal(quedan('Conejo'), c0);
 
-    // Dos animales y grooming, todo en un comprobante
+    // Dos animales y un servicio, todo en un comprobante
     const t3 = hex + '3';
-    assert.match(await multi([[conejo, 1], [hamster, 1]], { token: t3, grooming: '1', grooming_monto: '5000' }), /Venta registrada: 1 Conejo.* \+ 1 Hamster.* \+ grooming/);
+    assert.match(await multi([[conejo, 1], [hamster, 1]], { token: t3, servicio: '2' }), /Venta registrada: 1 Conejo.* \+ 1 Hamster.* \+ Baño/);
     const rc3 = await comprobante(t3);
     assert.match(rc3, /1 x Conejo/);
     assert.match(rc3, /1 x Hamster/);
-    assert.match(rc3, /Grooming/);
+    assert.match(rc3, /Baño/);
     assert.match(rc3, /TOTAL<\/span><span[^>]*>₡28[.,\s  ]000/); // 20 000 + 3 000 + 5 000
     bd.close();
+  }
+
+  // Servicios (catálogo del dueño) y productos (aserrín, borucha...)
+  {
+    const { DatabaseSync: BdCat } = await import('node:sqlite');
+    const bd = new BdCat(path.join(dir, 'ventas.db'));
+    const adm = campos => post(admin, '/admin', new URLSearchParams(campos));
+    const paginaEmpleado = () => fetch(B + '/', { headers: { cookie: emp } }).then(x => x.text());
+    const venderForm = pares => { const f = new FormData(); for (const [k, v] of pares) f.append(k, String(v)); return post(emp, '/', f); };
+
+    // El dueño crea servicios; validaciones y duplicados
+    assert.match(await adm({ accion: 'servicio', nombre: ' Peluquería ', precio: '12000' }), /Servicio guardado: Peluquería/);
+    assert.match(await adm({ accion: 'servicio', nombre: 'peluquería', precio: '1000' }), /Ya existe el servicio/);
+    assert.match(await adm({ accion: 'servicio', nombre: 'Gratis', precio: '0' }), /mayor que 0/);
+    assert.match(await adm({ accion: 'servicio', nombre: '', precio: '500' }), /Escriba el nombre/);
+    assert.match(await adm({ accion: 'servicio', nombre: 'Raro', precio: '12.5' }), /mayor que 0/);
+
+    // El empleado lo ve en la lista, con su precio, y solo lo marca
+    const idPelu = bd.prepare("select id from catalogo_servicios where nombre = 'Peluquería'").get().id;
+    let pagina = await paginaEmpleado();
+    assert.match(pagina, new RegExp('name="servicio" value="' + idPelu + '"'));
+    assert.match(pagina, /Peluquería/);
+    assert.match(pagina, /₡12[.,\s  ]000/);
+    assert.doesNotMatch(pagina, /name="grooming_monto"/); // ya no se escribe el monto a mano
+
+    // Dos servicios en una sola venta: una fila por servicio, un solo comprobante, precio del catálogo
+    const tS = 'e'.repeat(31) + '1';
+    assert.match(await venderForm([['empleado', 1], ['metodo', 'sinpe'], ['token', tS], ['servicio', idPelu], ['servicio', 2]]), /Venta registrada: Peluquería ₡12.* \+ Baño ₡5/);
+    assert.equal(bd.prepare('select count(*) n from servicios where token = ?').get(tS).n, 2);
+    const rcS = await fetch(B + '/?recibo=' + tS, { headers: { cookie: emp } }).then(x => x.text());
+    assert.match(rcS, /Peluquería/);
+    assert.match(rcS, /Baño/);
+    assert.match(rcS, /TOTAL<\/span><span[^>]*>₡17[.,\s  ]000/);
+
+    // El mismo servicio repetido en el formulario se cobra una sola vez
+    assert.match(await venderForm([['empleado', 1], ['metodo', 'sinpe'], ['servicio', 3], ['servicio', 3]]), /Venta registrada: Corte ₡3[.,\s  ]000$|Venta registrada: Corte ₡3[^+]*&ok/);
+
+    // Cambiar el precio no altera lo ya vendido; sí aplica a las ventas nuevas
+    assert.match(await adm({ accion: 'servicio', id: String(idPelu), nombre: 'Peluquería', precio: '15000' }), /Servicio guardado/);
+    assert.match(await paginaEmpleado(), /₡15[.,\s  ]000/);
+    assert.equal(bd.prepare('select monto from servicios where token = ? and nombre = ?').get(tS, 'Peluquería').monto, 12000);
+
+    // Eliminar: desaparece de la lista y ya no se puede vender, pero el historial lo conserva
+    assert.match(await adm({ accion: 'servicio', id: String(idPelu), eliminar: '1' }), /Servicio eliminado: Peluquería/);
+    assert.doesNotMatch(await paginaEmpleado(), /Peluquería/);
+    assert.match(await venderForm([['empleado', 1], ['metodo', 'sinpe'], ['servicio', idPelu]]), /ya no está disponible/);
+    assert.equal(bd.prepare('select count(*) n from servicios where token = ?').get(tS).n, 2);
+    assert.match(await adm({ accion: 'servicio', nombre: 'peluquería', precio: '9000' }), /Servicio guardado/); // se reactiva
+    assert.match(await paginaEmpleado(), /peluquería/i);
+
+    // Productos: nombre, cantidad y precio; se venden como un animal, en su propio grupo
+    assert.match(await adm({ accion: 'animal', clase: 'producto', tipo: 'Aserrín', cantidad: '20', precio: '2500' }), /Producto guardado: Aserrín/);
+    assert.match(await adm({ accion: 'animal', clase: 'producto', tipo: 'Borucha', cantidad: '10', precio: '3000' }), /Producto guardado: Borucha/);
+    assert.match(await adm({ accion: 'animal', clase: 'producto', tipo: 'Perro', cantidad: '1', precio: '1' }), /Ya existe un animal o producto/);
+    assert.equal(bd.prepare("select clase from animales where tipo = 'Aserrín'").get().clase, 'producto');
+    assert.equal(bd.prepare("select clase from animales where tipo = 'Conejo'").get().clase, 'animal');
+    pagina = await paginaEmpleado();
+    const grupoProductos = /<optgroup label="Productos">([\s\S]*?)<\/optgroup>/.exec(pagina)[1];
+    const grupoAnimales = /<optgroup label="Animales">([\s\S]*?)<\/optgroup>/.exec(pagina)[1];
+    assert.match(grupoProductos, /Aserrín/);
+    assert.match(grupoProductos, /Borucha/);
+    assert.doesNotMatch(grupoAnimales, /Aserrín/);
+    assert.match(grupoAnimales, /Conejo/);
+    const panelP = await fetch(B + '/admin', { headers: { cookie: admin } }).then(x => x.text());
+    assert.match(panelP, /id="titulo-producto"/);
+    assert.match(panelP, /name="clase" value="producto"/);
+
+    const aserrin = bd.prepare("select id from animales where tipo = 'Aserrín'").get().id;
+    const conejoId = bd.prepare("select id from animales where tipo = 'Conejo'").get().id;
+    const conejosAntes = bd.prepare("select cantidad from animales where id = ?").get(conejoId).cantidad;
+    const tP = 'f'.repeat(31) + '1';
+    assert.match(await venderForm([['empleado', 1], ['metodo', 'tarjeta'], ['token', tP], ['animal', aserrin], ['cantidad', 4], ['animal', conejoId], ['cantidad', 1], ['servicio', 2]]), /Venta registrada: 4 Aserrín — ₡10[.,\s  ]000 \+ 1 Conejo.* \+ Baño/);
+    assert.equal(bd.prepare('select cantidad from animales where id = ?').get(aserrin).cantidad, 16);
+    assert.equal(bd.prepare('select cantidad from animales where id = ?').get(conejoId).cantidad, conejosAntes - 1);
+    const rcP = await fetch(B + '/?recibo=' + tP, { headers: { cookie: emp } }).then(x => x.text());
+    assert.match(rcP, /4 x Aserrín/);
+    assert.match(rcP, /1 x Conejo/);
+    assert.match(rcP, /Baño/);
+    assert.match(rcP, /TOTAL<\/span><span[^>]*>₡35[.,\s  ]000/); // 10 000 + 20 000 + 5 000
+    assert.match(await venderForm([['empleado', 1], ['metodo', 'sinpe'], ['animal', aserrin], ['cantidad', 999]]), /No hay suficientes Aserrín/);
+    assert.match(await adm({ accion: 'animal', id: String(aserrin), eliminar: '1' }), /Producto eliminado: Aserrín/);
+    assert.doesNotMatch(await paginaEmpleado(), /Aserrín/);
+    bd.close();
+  }
+
+  // El dueño ve las facturas y su número aparece en las tablas
+  {
+    const tok = '9'.repeat(26) + 'ab12cd';
+    const f = new FormData(); for (const [k, v] of [['empleado', 1], ['metodo', 'sinpe'], ['token', tok], ['servicio', 1]]) f.append(k, String(v));
+    assert.match(await post(emp, '/', f), /Venta registrada/);
+    const comoAdmin = ruta => fetch(B + ruta, { headers: { cookie: admin }, redirect: 'manual' });
+
+    // Vista de la factura dentro del panel
+    const vista = await comoAdmin('/admin/recibo/' + tok);
+    assert.equal(vista.status, 200);
+    const htmlV = await vista.text();
+    assert.match(htmlV, /COMPROBANTE DE VENTA/);
+    assert.match(htmlV, /AB12CD/);
+    assert.match(htmlV, /Grooming/);
+    assert.match(htmlV, /Imprimir factura/);
+    assert.equal((await comoAdmin('/admin')).status, 200); // abrirla no le cierra la sesión al dueño
+
+    // Solo el dueño: sin sesión o con el acceso de empleado va a la pantalla del PIN
+    assert.match((await fetch(B + '/admin/recibo/' + tok, { redirect: 'manual' })).headers.get('location'), /\/login/);
+    assert.match((await fetch(B + '/admin/recibo/' + tok, { headers: { cookie: emp }, redirect: 'manual' })).headers.get('location'), /\/login/);
+    // Código inexistente o inválido
+    for (const malo of ['abc', 'f'.repeat(32)]) {
+      const r = await comoAdmin('/admin/recibo/' + malo);
+      assert.match(decodeURIComponent(r.headers.get('location')), /No se encontró esa factura/);
+    }
+
+    // El número aparece en el panel y en el historial del dueño, con enlace a la factura
+    for (const ruta of ['/admin', '/admin/historial']) {
+      const h = await comoAdmin(ruta).then(r => r.text());
+      assert.match(h, new RegExp('href="/admin/recibo/' + tok + '"'));
+      assert.match(h, />AB12CD</);
+      assert.match(h, /N° factura/);
+    }
+    // ...y en el historial de los empleados
+    assert.match(await fetch(B + '/?ver=historial', { headers: { cookie: emp } }).then(r => r.text()), /N° AB12CD/);
+
+    // Buscador por número (cualquier día; mayúsculas o minúsculas)
+    for (const n of ['AB12CD', 'ab12cd', ' ab12cd ']) assert.equal((await comoAdmin('/admin/historial?n=' + encodeURIComponent(n))).headers.get('location'), '/admin/recibo/' + tok);
+    assert.match(decodeURIComponent((await comoAdmin('/admin/historial?n=zzzzzz')).headers.get('location')), /No se encontró la factura N° ZZZZZZ/);
+    assert.match(decodeURIComponent((await comoAdmin('/admin/historial?n=ab')).headers.get('location')), /No se encontró la factura/);
+    assert.equal((await comoAdmin('/admin/historial?n=')).status, 200); // buscador vacío: muestra el día normal
   }
 
   // Sesión del dueño: caduca por inactividad (20 min) y se cierra al abrir la página de ventas

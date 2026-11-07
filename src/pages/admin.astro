@@ -2,7 +2,7 @@
 import AdminLayout from '../layouts/AdminLayout.astro';
 import { db, crc, MOVIMIENTOS_SQL } from '../lib/db';
 import { cambiarCodigo, codigoLocal, nuevoCodigo } from '../lib/acceso';
-import { numeroDe } from '../lib/comprobante';
+import TablaVentas from '../components/TablaVentas.astro';
 
 const back = (msg: string, ok = false) => Astro.redirect(`/admin?msg=${encodeURIComponent(msg)}${ok ? '&ok' : ''}`, 303);
 
@@ -107,7 +107,6 @@ const ventas = db.prepare(`${MOVIMIENTOS_SQL} WHERE cierre IS NULL ORDER BY fech
 // Una venta con varios renglones (animal + producto + servicio) cuenta como UNA venta.
 const cuentaVentas = new Set(ventas.map((v: any) => v.token ?? `${v.origen}${v.id}`)).size;
 const hayFactura = ventas.some((v: any) => v.factura); // la columna solo aparece si alguna venta vieja trae factura
-const tipoDe = (v: any) => (v.clase === 'servicio' ? 'Servicio' : v.clase === 'producto' ? 'Producto' : 'Animal');
 const codigo = codigoLocal();
 const ultimo = (origen: string) => Math.max(0, ...ventas.filter(v => v.origen === origen).map(v => v.id));
 
@@ -161,35 +160,8 @@ for (const v of ventas) {
 
   {ventas.length > 0 && (
     <div class="ventas" role="region" aria-label="Ventas sin cerrar" tabindex="0">
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">Fecha</th><th scope="col">N° factura</th><th scope="col">Empleado</th><th scope="col">Detalle</th><th scope="col">Tipo</th>
-            <th scope="col" class="num">Cant.</th><th scope="col" class="num">Precio</th><th scope="col" class="num">Total</th>
-            <th scope="col">Método</th>{hayFactura && <th scope="col">Factura</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {ventas.map(v => (
-            <tr>
-              <td class="fecha">{v.fecha.slice(0, 16)}</td>
-              <td>{v.token ? <a class="n-factura" href={`/admin/recibo/${v.token}`} title="Ver la factura">{numeroDe(v.token)}</a> : <span class="sin-factura">—</span>}</td>
-              <td>{v.nombre}</td>
-              <td>{v.tipo}</td>
-              <td><span class:list={['clase', v.clase]}>{tipoDe(v)}</span></td>
-              <td class="num">{v.origen === 's' ? '—' : v.cantidad}</td>
-              <td class="num">{crc(v.precio_unit)}</td>
-              <td class="num fuerte">{crc(v.cantidad * v.precio_unit)}</td>
-              <td><span class:list={['metodo', v.metodo]}>{v.metodo === 'sinpe' ? 'SINPE' : 'Tarjeta'}</span></td>
-              {hayFactura && (
-                <td>{v.factura ? <a class="factura" href={`/factura/${v.factura}`} target="_blank">Ver <i aria-hidden="true" class="ti ti-arrow-up-right"></i></a> : <span class="sin-factura">—</span>}</td>
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <TablaVentas ventas={ventas} hayFactura={hayFactura} />
     </div>
-    <p class="desliza"><i aria-hidden="true" class="ti ti-arrows-horizontal"></i>Desliza la tabla para ver todas las columnas</p>
   )}
 
   <div class="workspace">
@@ -394,25 +366,6 @@ for (const v of ventas) {
   .history-link { display: inline-flex; min-height: 44px; align-items: center; gap: 8px; padding: 0 12px; color: var(--deep); font-size: 14px; font-weight: 700; text-decoration: underline; text-underline-offset: 4px; }
 
   .ventas { margin: 0 0 35px; background: #fff; border-bottom: 1px solid var(--line); overflow-x: auto; }
-  .ventas table { width: 100%; min-width: 760px; border-collapse: collapse; text-align: left; }
-  .ventas th { padding: 12px 18px; color: var(--muted); font-size: 13px; font-weight: 700; white-space: nowrap; border-bottom: 1px solid var(--line); }
-  .ventas td { padding: 13px 18px; font-size: 15px; border-top: 1px solid #e1e7e2; white-space: nowrap; }
-  .ventas tr:hover td { background: #fbfcfb; }
-  .ventas .num { text-align: right; font-variant-numeric: tabular-nums; }
-  .desliza { display: none; align-items: center; gap: 7px; margin: 8px 0 35px; color: var(--muted); font-size: 13px; }
-  @media (max-width: 760px) { .desliza { display: flex; } }
-  .fecha { color: var(--muted); font-variant-numeric: tabular-nums; }
-  .fuerte { font-weight: 700; }
-  .n-factura { color: var(--deep); font: 700 13px 'Space Grotesk', sans-serif; letter-spacing: .08em; text-decoration: underline; text-underline-offset: 3px; }
-  .n-factura:hover { color: var(--green); }
-  .metodo { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-  .metodo.sinpe { background: #e8f0fb; color: #2b5a99; }
-  .metodo.tarjeta { background: #f1ecf8; color: #634594; }
-  .clase { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #eef2ef; color: #4d5f54; }
-  .clase.producto { background: #e5f0f6; color: #2d5b7a; }
-  .clase.servicio { background: #fdf1dc; color: #8a5a12; }
-  .factura { display: inline-flex; align-items: center; gap: 4px; color: var(--deep); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
-  .sin-factura { color: #9aa79f; }
 
   .workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: 44px; align-items: start; }
   .sec-animales { order: 1; }
@@ -500,7 +453,7 @@ for (const v of ventas) {
     .serv-row { grid-template-columns: 1fr 1fr; gap: 12px; padding: 17px 13px; }
     .serv-nombre { grid-column: 1 / -1; }
     .serv-row .row-save, .serv-row .eliminar { width: 100%; }
-    .serv-row .eliminar { grid-column: 1 / -1; }
+    .serv-row label:not(.serv-nombre) { grid-column: 1 / -1; } /* precio a todo el ancho; Guardar y Eliminar lado a lado, como en animales */
     .serv-nueva { grid-template-columns: 1fr 1fr; padding: 0; }
     .serv-nueva .row-save { grid-column: 1 / -1; }
     .serv-nueva .serv-nombre { grid-column: 1 / -1; }
@@ -509,5 +462,6 @@ for (const v of ventas) {
     .eliminar { gap: 8px; padding: 0 15px; }
     .txt-el { display: inline; }
     .add-row { padding: 16px 13px; }
+    .employee-add .action { width: 100%; }
   }
 </style>

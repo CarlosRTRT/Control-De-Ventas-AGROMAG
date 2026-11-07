@@ -1,0 +1,79 @@
+---
+// Tabla de ventas del dueño (panel e historial). En computador es una tabla; en celular cada venta es una tarjeta.
+import { crc } from '../lib/db';
+import { numeroDe } from '../lib/comprobante';
+
+interface Props { ventas: any[]; hayFactura: boolean; soloHora?: boolean }
+const { ventas, hayFactura, soloHora = false } = Astro.props;
+const tipoDe = (v: any) => (v.clase === 'servicio' ? 'Servicio' : v.clase === 'producto' ? 'Producto' : 'Animal');
+---
+<table>
+  <thead>
+    <tr>
+      <th scope="col">{soloHora ? 'Hora' : 'Fecha'}</th><th scope="col">N° factura</th><th scope="col">Empleado</th><th scope="col">Detalle</th><th scope="col">Tipo</th>
+      <th scope="col" class="num">Cant.</th><th scope="col" class="num">Precio</th><th scope="col" class="num">Total</th>
+      <th scope="col">Método</th>{hayFactura && <th scope="col">Factura</th>}
+    </tr>
+  </thead>
+  <tbody>
+    {ventas.map(v => (
+      <tr>
+        <td class="c-fecha fecha">{soloHora ? v.fecha.slice(11, 16) : v.fecha.slice(0, 16)}</td>
+        <td class="c-nf">{v.token ? <a class="n-factura" href={`/admin/recibo/${v.token}`} title="Ver la factura">{numeroDe(v.token)}</a> : <span class="sin-factura">—</span>}</td>
+        <td class="c-emp">{v.nombre}</td>
+        <td class="c-det">{v.tipo}</td>
+        <td class="c-tipo"><span class:list={['clase', v.clase]}>{tipoDe(v)}</span></td>
+        <td class:list={['c-cant', 'num', { 'sin-cant': v.origen === 's' }]}>{v.origen === 's' ? '—' : v.cantidad}</td>
+        <td class:list={['c-precio', 'num', { 'sin-cant': v.origen === 's' }]}>{crc(v.precio_unit)}</td>
+        <td class="c-total num fuerte">{crc(v.cantidad * v.precio_unit)}</td>
+        <td class="c-metodo"><span class:list={['metodo', v.metodo]}>{v.metodo === 'sinpe' ? 'SINPE' : 'Tarjeta'}</span></td>
+        {hayFactura && (
+          <td class="c-fact">{v.factura ? <a class="factura" href={`/factura/${v.factura}`} target="_blank">Ver <i aria-hidden="true" class="ti ti-arrow-up-right"></i></a> : <span class="sin-factura">—</span>}</td>
+        )}
+      </tr>
+    ))}
+  </tbody>
+</table>
+
+<style>
+  table { width: 100%; min-width: 760px; border-collapse: collapse; text-align: left; }
+  th { padding: 12px 18px; color: var(--muted); font-size: 13px; font-weight: 700; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  td { padding: 13px 18px; font-size: 15px; border-top: 1px solid #e1e7e2; white-space: nowrap; }
+  tr:hover td { background: #fbfcfb; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .fecha { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .fuerte { font-weight: 700; }
+  .n-factura { color: var(--deep); font: 700 13px 'Space Grotesk', sans-serif; letter-spacing: .08em; text-decoration: underline; text-underline-offset: 3px; }
+  .n-factura:hover { color: var(--green); }
+  .metodo { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+  .metodo.sinpe { background: #e8f0fb; color: #2b5a99; }
+  .metodo.tarjeta { background: #f1ecf8; color: #634594; }
+  .clase { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #eef2ef; color: #4d5f54; }
+  .clase.producto { background: #e5f0f6; color: #2d5b7a; }
+  .clase.servicio { background: #fdf1dc; color: #8a5a12; }
+  .factura { display: inline-flex; align-items: center; gap: 4px; color: var(--deep); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+  .sin-factura { color: #9aa79f; }
+
+  /* Celular: cada venta es una tarjeta, sin deslizar de lado */
+  @media (max-width: 760px) {
+    table { min-width: 0; display: block; }
+    thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); } /* se oculta a la vista, no para lectores de pantalla */
+    tbody { display: block; }
+    tr { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 10px; padding: 14px 16px; border-top: 1px solid #e1e7e2; } /* lo que no cabe salta de línea, nunca se encima */
+    td { display: block; padding: 0; border: 0; white-space: normal; font-size: 14px; min-width: 0; }
+    tr:hover td { background: transparent; }
+    .c-fecha { order: 1; font-size: 13px; white-space: nowrap; }
+    .c-nf { order: 2; }
+    .c-metodo { order: 3; margin-left: auto; }
+    .c-det { order: 4; flex: 1 1 100%; font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+    .c-tipo { order: 5; min-width: 84px; }
+    .c-cant { order: 6; }
+    .c-cant::after { content: ' ×'; }
+    .c-precio { order: 7; color: var(--muted); }
+    .c-total { order: 8; margin-left: auto; font-size: 17px; white-space: nowrap; }
+    .sin-cant { display: none; } /* en un servicio no hay cantidad ni precio aparte: ya está en el total */
+    .c-emp { order: 9; flex: 1 1 auto; color: var(--muted); font-size: 13px; }
+    .c-fact { order: 10; margin-left: auto; }
+    .sin-factura { display: none; }
+  }
+</style>

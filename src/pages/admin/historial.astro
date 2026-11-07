@@ -1,7 +1,8 @@
 ---
 import AdminLayout from '../../layouts/AdminLayout.astro';
 import { db, hoy, crc, MOVIMIENTOS_SQL } from '../../lib/db';
-import { numeroDe, tokenPorNumero } from '../../lib/comprobante';
+import { tokenPorNumero } from '../../lib/comprobante';
+import TablaVentas from '../../components/TablaVentas.astro';
 
 // Buscador: escribe el N° de una factura (de cualquier día) y se abre.
 const buscado = Astro.url.searchParams.get('n');
@@ -21,7 +22,6 @@ const ventas = db.prepare(`${MOVIMIENTOS_SQL} WHERE fecha >= ? AND fecha < date(
 // Una venta con varios renglones (animal + producto + servicio) cuenta como UNA venta.
 const cuentaVentas = new Set(ventas.map((v: any) => v.token ?? `${v.origen}${v.id}`)).size;
 const hayFactura = ventas.some((v: any) => v.factura); // la columna solo aparece si alguna venta vieja trae factura
-const tipoDe = (v: any) => (v.clase === 'servicio' ? 'Servicio' : v.clase === 'producto' ? 'Producto' : 'Animal');
 const cierres = [...new Set(ventas.filter(v => v.cierre).map(v => v.cierre.slice(11, 16)))];
 const pendientes = ventas.filter(v => !v.cierre).length;
 const titulo = new Date(dia + 'T12:00:00').toLocaleDateString('es-CR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -77,35 +77,8 @@ for (const v of ventas) {
   {ventas.length > 0 && (
     <>
       <div class="ventas" role="region" aria-label="Ventas del día" tabindex="0">
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Hora</th><th scope="col">N° factura</th><th scope="col">Empleado</th><th scope="col">Detalle</th><th scope="col">Tipo</th>
-              <th scope="col" class="num">Cant.</th><th scope="col" class="num">Precio</th><th scope="col" class="num">Total</th>
-              <th scope="col">Método</th>{hayFactura && <th scope="col">Factura</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {ventas.map(v => (
-              <tr>
-                <td class="fecha">{v.fecha.slice(11, 16)}</td>
-                <td>{v.token ? <a class="n-factura" href={`/admin/recibo/${v.token}`} title="Ver la factura">{numeroDe(v.token)}</a> : <span class="sin-factura">—</span>}</td>
-                <td>{v.nombre}</td>
-                <td>{v.tipo}</td>
-              <td><span class:list={['clase', v.clase]}>{tipoDe(v)}</span></td>
-                <td class="num">{v.origen === 's' ? '—' : v.cantidad}</td>
-                <td class="num">{crc(v.precio_unit)}</td>
-                <td class="num fuerte">{crc(v.cantidad * v.precio_unit)}</td>
-                <td><span class:list={['metodo', v.metodo]}>{v.metodo === 'sinpe' ? 'SINPE' : 'Tarjeta'}</span></td>
-                {hayFactura && (
-                <td>{v.factura ? <a class="factura" href={`/factura/${v.factura}`} target="_blank">Ver <i aria-hidden="true" class="ti ti-arrow-up-right"></i></a> : <span class="sin-factura">—</span>}</td>
-              )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <TablaVentas ventas={ventas} hayFactura={hayFactura} soloHora />
       </div>
-      <p class="desliza"><i aria-hidden="true" class="ti ti-arrows-horizontal"></i>Desliza la tabla para ver todas las columnas</p>
     </>
   )}
 </AdminLayout>
@@ -133,28 +106,12 @@ for (const v of ventas) {
   .cierre.pendiente { color: #8a5a12; }
 
   .ventas { margin: 0 0 35px; background: #fff; border-bottom: 1px solid var(--line); overflow-x: auto; }
-  .ventas table { width: 100%; min-width: 760px; border-collapse: collapse; text-align: left; }
-  .ventas th { padding: 12px 18px; color: var(--muted); font-size: 13px; font-weight: 700; white-space: nowrap; border-bottom: 1px solid var(--line); }
-  .ventas td { padding: 13px 18px; font-size: 15px; border-top: 1px solid #e1e7e2; white-space: nowrap; }
-  .ventas tr:hover td { background: #fbfcfb; }
-  .ventas .num { text-align: right; font-variant-numeric: tabular-nums; }
-  .fecha { color: var(--muted); font-variant-numeric: tabular-nums; }
-  .fuerte { font-weight: 700; }
-  .n-factura { color: var(--deep); font: 700 13px 'Space Grotesk', sans-serif; letter-spacing: .08em; text-decoration: underline; text-underline-offset: 3px; }
-  .n-factura:hover { color: var(--green); }
-  .metodo { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-  .metodo.sinpe { background: #e8f0fb; color: #2b5a99; }
-  .metodo.tarjeta { background: #f1ecf8; color: #634594; }
-  .clase { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #eef2ef; color: #4d5f54; }
-  .clase.producto { background: #e5f0f6; color: #2d5b7a; }
-  .clase.servicio { background: #fdf1dc; color: #8a5a12; }
-  .factura { display: inline-flex; align-items: center; gap: 4px; color: var(--deep); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
-  .sin-factura { color: #9aa79f; }
-  .desliza { display: none; align-items: center; gap: 7px; margin: 8px 0 35px; color: var(--muted); font-size: 13px; }
 
-  @media (max-width: 760px) { .desliza { display: flex; } }
   @media (max-width: 620px) {
     .agro-title { font-size: 32px; }
+    .nav-dia { width: 100%; flex-wrap: wrap; }
+    .nav-dia input[type=date] { flex: 1 1 150px; min-width: 0; }
+    .nav-dia .buscar-n { flex: 1 1 150px; min-width: 0; width: auto; }
     .sales-empty { grid-template-columns: 1fr; gap: 6px; margin: 17px 0 27px; padding: 16px; }
     .sales-empty-title { font-size: 16px; }
   }

@@ -146,4 +146,10 @@ const ok = Astro.url.searchParams.has('ok');
     .field { height: 50px; }
     .admin-footer { flex-direction: column; gap: 7px; margin-top: 30px; }
   }
+  @media (max-width: 480px) {
+    /* encabezado en dos filas: marca arriba, menú repartido abajo */
+    .agro-header-inner { flex-wrap: wrap; min-height: 0; padding: 10px 0 8px; gap: 6px; }
+    .agro-nav { width: 100%; justify-content: space-between; border-top: 1px solid rgba(255, 255, 255, .18); padding-top: 4px; }
+    .agro-nav a, .agro-nav button { flex: 1; justify-content: center; }
+  }
 </style>

@@ -1,5 +1,5 @@
-// Mantiene al día las cantidades en pantalla (cada 5 s, solo con la pestaña a la vista), sin recargar ni borrar lo escrito.
-const CADA = 5000;
+// Mantiene al día las cantidades en pantalla (cada 2 s, solo con la pestaña a la vista), sin recargar ni borrar lo escrito.
+const CADA = 2000;
 let temporizador: number | undefined;
 
 async function actualizar() {

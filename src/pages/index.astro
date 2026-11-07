@@ -275,6 +275,7 @@ const ok = Astro.url.searchParams.has('ok');
     </div>
 
     <script>import '../scripts/avisos';</script>
+    <script>import '../scripts/stock';</script>
     <script>
       // Imprime la vista previa (la hoja de estilos de impresión deja solo el comprobante).
       document.addEventListener('click', e => {
@@ -296,6 +297,7 @@ const ok = Astro.url.searchParams.has('ok');
         const nota = form.querySelector<HTMLElement>('#nota-cantidad')!;
         const agregar = form.querySelector<HTMLButtonElement>('#agregar-linea')!;
         const molde = lineas.querySelector<HTMLElement>('.linea')!.cloneNode(true) as HTMLElement; // línea en blanco para "Agregar otro"
+        (window as any).__moldeVenta = molde; // src/scripts/stock.ts mantiene al día sus cantidades
         const selects = () => [...lineas.querySelectorAll<HTMLSelectElement>('select[name=animal]')];
         const cantidadDe = (linea: Element) => linea.querySelector<HTMLInputElement>('input[name=cantidad]')!;
         const totalAnimales = selects()[0].options.length - 1;
@@ -305,7 +307,7 @@ const ok = Astro.url.searchParams.has('ok');
           const sel = linea.querySelector<HTMLSelectElement>('select')!;
           const cant = cantidadDe(linea);
           const stock = Number(sel.selectedOptions[0]?.dataset.stock);
-          if (stock) { cant.max = String(stock); cant.setCustomValidity(Number(cant.value) > stock ? `Solo quedan ${stock}` : ''); }
+          if (sel.value && !Number.isNaN(stock)) { cant.max = String(stock); cant.setCustomValidity(Number(cant.value) > stock ? (stock ? `Solo quedan ${stock}` : 'Ya no quedan') : ''); }
           else { cant.removeAttribute('max'); cant.setCustomValidity(''); }
         };
 

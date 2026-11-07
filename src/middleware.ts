@@ -20,11 +20,13 @@ export const onRequest = defineMiddleware((ctx, next) => {
     // El dueño que abre ventas queda como usuario de ventas en este aparato, sin pedirle el código.
     if (!empleado) entregarAcceso(ctx.cookies, ctx.url);
     empleado = true;
-  } else if (admin) {
+  } else if (admin && p !== '/stock') { // /stock lo consulta la pantalla sola cada pocos segundos: no cuenta como uso
     // Sesión por inactividad: se renueva con cada uso y caduca a los 60 minutos sin actividad.
     db.prepare(`UPDATE sesiones SET expira = datetime('now','+60 minutes') WHERE token = ?`).run(token);
   }
   ctx.locals.admin = admin;
+
+  if (p === '/stock') return empleado || admin ? next() : new Response(null, { status: 401 }); // cantidades en vivo: empleados o dueño
 
   const libre = ['/login', '/acceso', '/logout'].includes(p) || p.startsWith('/admin') || p.startsWith('/factura');
   if (!libre && !empleado) return ctx.redirect('/acceso');

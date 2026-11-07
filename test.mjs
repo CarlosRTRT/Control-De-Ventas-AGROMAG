@@ -418,6 +418,20 @@ try {
   assert.ok(minutos() > 58 && minutos() <= 60.5, 'la sesión debe durar ~60 min');
   sesiones.prepare("update sesiones set expira = datetime('now','-1 minute')").run(); // simula 60 min sin usar
   assert.equal((await fetch(B + '/admin', { headers: { cookie: admin }, redirect: 'manual' })).status, 302);
+  // Cantidades en vivo (/stock): solo empleados o dueño, y consultarlo no renueva la sesión del dueño
+  {
+    assert.equal((await fetch(B + '/stock')).status, 401);
+    const comoEmp = await (await fetch(B + '/stock', { headers: { cookie: emp } })).json();
+    const conejoBd = sesiones.prepare("select id, cantidad from animales where tipo = 'Conejo'").get();
+    assert.equal(comoEmp.find(f => f.id === conejoBd.id).cantidad, conejoBd.cantidad); // refleja la base al instante
+    const adminS = await login('clave123');
+    assert.equal((await fetch(B + '/stock', { headers: { cookie: adminS } })).status, 200);
+    sesiones.prepare("update sesiones set expira = datetime('now','+5 minutes')").run();
+    await fetch(B + '/stock', { headers: { cookie: adminS } });
+    assert.ok(minutos() < 6, 'consultar /stock no debe alargar la sesión');
+    sesiones.prepare("update sesiones set expira = datetime('now','+60 minutes')").run();
+  }
+
   // Tras el PIN vuelve a la página que se quería abrir (solo rutas del panel)
   {
     const pide = await fetch(B + '/admin/historial?dia=2026-01-05', { redirect: 'manual' });

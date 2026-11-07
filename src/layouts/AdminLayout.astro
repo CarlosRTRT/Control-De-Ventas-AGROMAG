@@ -65,7 +65,12 @@ const ok = Astro.url.searchParams.has('ok');
         const f = e.target as HTMLFormElement;
         const msg = (e as SubmitEvent).submitter?.dataset.confirm ?? f.dataset.confirm;
         if (msg && !confirm(msg)) e.preventDefault();
+        // Al guardar, la página se recarga: se recuerda dónde estaba para volver al mismo punto, no al inicio.
+        if (!e.defaultPrevented && f.method === 'post') try { sessionStorage.setItem('scroll', JSON.stringify([location.pathname, scrollY])); } catch {}
       });
+      const guardado = (() => { try { return JSON.parse(sessionStorage.getItem('scroll') || 'null'); } catch { return null; } })();
+      try { sessionStorage.removeItem('scroll'); } catch {}
+      if (guardado && guardado[0] === location.pathname) scrollTo(0, guardado[1]);
     </script>
   </body>
 </html>

@@ -411,13 +411,24 @@ try {
     assert.equal((await comoAdmin('/admin/historial?n=')).status, 200); // buscador vacío: muestra el día normal
   }
 
-  // Sesión del dueño: caduca por inactividad (20 min) y se cierra al abrir la página de ventas
+  // Sesión del dueño: caduca por inactividad (60 min) y se cierra al abrir la página de ventas
   const { DatabaseSync } = await import('node:sqlite');
   const sesiones = new DatabaseSync(path.join(dir, 'ventas.db'));
   const minutos = () => (Date.parse(sesiones.prepare('select expira from sesiones order by rowid desc limit 1').get().expira.replace(' ', 'T') + 'Z') - Date.now()) / 60000;
-  assert.ok(minutos() > 18 && minutos() <= 20.5, 'la sesión debe durar ~20 min');
-  sesiones.prepare("update sesiones set expira = datetime('now','-1 minute')").run(); // simula 20 min sin usar
+  assert.ok(minutos() > 58 && minutos() <= 60.5, 'la sesión debe durar ~60 min');
+  sesiones.prepare("update sesiones set expira = datetime('now','-1 minute')").run(); // simula 60 min sin usar
   assert.equal((await fetch(B + '/admin', { headers: { cookie: admin }, redirect: 'manual' })).status, 302);
+  // Tras el PIN vuelve a la página que se quería abrir (solo rutas del panel)
+  {
+    const pide = await fetch(B + '/admin/historial?dia=2026-01-05', { redirect: 'manual' });
+    const aLogin = pide.headers.get('location');
+    assert.equal(aLogin, '/login?volver=' + encodeURIComponent('/admin/historial?dia=2026-01-05'));
+    const entra = async (volver, pin = 'clave123') => fetch(B + '/login?volver=' + encodeURIComponent(volver), { method: 'POST', headers: { origin: B }, body: new URLSearchParams({ pin }), redirect: 'manual' });
+    assert.equal((await entra('/admin/historial?dia=2026-01-05')).headers.get('location'), '/admin/historial?dia=2026-01-05');
+    for (const malo of ['//evil.com', 'https://evil.com', '/\\evil.com', '/adminx', '/', '']) assert.equal((await entra(malo)).headers.get('location'), '/admin', 'no debe volver a ' + malo);
+    const mal = await entra('/admin/historial', 'incorrecto');
+    assert.match(decodeURIComponent(mal.headers.get('location')), /PIN incorrecto&volver=\/admin\/historial/); // si se equivoca, no pierde el destino
+  }
   const admin2 = await login('clave123');
   assert.equal((await fetch(B + '/admin', { headers: { cookie: admin2 } })).status, 200);
   assert.equal((await fetch(B + '/', { headers: { cookie: admin2 } })).status, 200); // el dueño abre la página de ventas

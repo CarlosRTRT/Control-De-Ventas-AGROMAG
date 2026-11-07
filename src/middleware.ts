@@ -21,13 +21,15 @@ export const onRequest = defineMiddleware((ctx, next) => {
     if (!empleado) entregarAcceso(ctx.cookies, ctx.url);
     empleado = true;
   } else if (admin) {
-    // Sesión por inactividad: se renueva con cada uso y caduca a los 20 minutos sin actividad.
-    db.prepare(`UPDATE sesiones SET expira = datetime('now','+20 minutes') WHERE token = ?`).run(token);
+    // Sesión por inactividad: se renueva con cada uso y caduca a los 60 minutos sin actividad.
+    db.prepare(`UPDATE sesiones SET expira = datetime('now','+60 minutes') WHERE token = ?`).run(token);
   }
   ctx.locals.admin = admin;
 
   const libre = ['/login', '/acceso', '/logout'].includes(p) || p.startsWith('/admin') || p.startsWith('/factura');
   if (!libre && !empleado) return ctx.redirect('/acceso');
-  if ((p.startsWith('/admin') || p.startsWith('/factura')) && !admin) return ctx.redirect('/login');
+  if ((p.startsWith('/admin') || p.startsWith('/factura')) && !admin)
+    // Tras escribir el PIN vuelve a la página que quería abrir (solo al pedir una página, no al guardar un formulario).
+    return ctx.redirect(ctx.request.method === 'GET' ? '/login?volver=' + encodeURIComponent(p + ctx.url.search) : '/login');
   return next();
 });

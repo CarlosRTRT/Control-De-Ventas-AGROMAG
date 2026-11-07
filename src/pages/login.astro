@@ -4,6 +4,11 @@ import { bloqueado, ipDe, registrarFallo } from '../lib/acceso';
 import { db, pinCorrecto } from "../lib/db";
 import { randomBytes } from "node:crypto";
 
+// Página a la que volver tras el PIN: solo rutas internas del panel (nunca un sitio externo).
+const pedida = Astro.url.searchParams.get("volver") || "";
+const volver = /^\/(admin|factura)(\/|\?|$)/.test(pedida) && !pedida.includes("\\") ? pedida : "";
+const sufijo = volver ? "&volver=" + encodeURIComponent(volver) : "";
+
 if (Astro.request.method === "POST") {
   if ((process.env.ADMIN_PIN || "").length < 4)
     throw new Error(
@@ -11,19 +16,19 @@ if (Astro.request.method === "POST") {
     );
   const ip = ipDe(Astro.request, Astro.clientAddress);
   if (bloqueado(ip))
-    return Astro.redirect("/login?msg=" + encodeURIComponent("Demasiados intentos. Espere unos minutos."), 303);
+    return Astro.redirect("/login?msg=" + encodeURIComponent("Demasiados intentos. Espere unos minutos.") + sufijo, 303);
   const pin = String((await Astro.request.formData()).get("pin") || "");
   if (!pinCorrecto(pin)) {
     registrarFallo(ip);
     await new Promise((r) => setTimeout(r, 1000)); // frena intentos de adivinar el PIN
     return Astro.redirect(
-      "/login?msg=" + encodeURIComponent("PIN incorrecto"),
+      "/login?msg=" + encodeURIComponent("PIN incorrecto") + sufijo,
       303,
     );
   }
   const token = randomBytes(24).toString("hex");
   db.prepare(`DELETE FROM sesiones WHERE expira <= datetime('now')`).run();
-  db.prepare("INSERT INTO sesiones (token, expira) VALUES (?, datetime('now','+20 minutes'))").run(token);
+  db.prepare("INSERT INTO sesiones (token, expira) VALUES (?, datetime('now','+60 minutes'))").run(token);
   Astro.cookies.set("s", token, {
     httpOnly: true,
     sameSite: "strict",
@@ -32,7 +37,7 @@ if (Astro.request.method === "POST") {
     secure:
       Astro.url.protocol === "https:" || process.env.COOKIE_SECURE === "1",
   });
-  return Astro.redirect("/admin", 303);
+  return Astro.redirect(volver || "/admin", 303);
 }
 
 const error = Astro.url.searchParams.get("msg");

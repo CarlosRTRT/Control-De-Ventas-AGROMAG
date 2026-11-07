@@ -31,6 +31,6 @@
 @keyframes vt-entrar { from { opacity: 0; } to { opacity: 1; } }
 @keyframes vt-salir { to { opacity: 0; } }
 
-/* Los avisos se cierran solos (ver src/scripts/avisos.ts) */
-.aviso { overflow: hidden; }
-.aviso.saliendo { opacity: 0; max-height: 0 !important; margin-top: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; transition: opacity .3s ease, max-height .4s ease, margin .4s ease, padding .4s ease; }
+/* Los avisos flotan arriba como un tooltip (no empujan el contenido) y se cierran solos (ver src/scripts/avisos.ts) */
+.aviso { position: fixed !important; top: 16px; left: 50%; transform: translateX(-50%); z-index: 1000; margin: 0 !important; width: max-content; max-width: min(560px, calc(100vw - 32px)) !important; box-shadow: 0 12px 32px rgba(29, 42, 36, .22); pointer-events: none; }
+.aviso.saliendo { opacity: 0; transform: translate(-50%, -8px); transition: opacity .3s ease, transform .3s ease; }

@@ -37,7 +37,7 @@ const ok = Astro.url.searchParams.has('ok');
             <a href="/admin/historial" aria-current={activo === 'historial' ? 'page' : undefined}>
               <span class="nav-icon"><i aria-hidden="true" class="ti ti-history"></i></span>Historial
             </a>
-            <a href="/">
+            <a href="/" data-astro-prefetch="false" data-astro-reload>
               <span class="nav-icon"><i aria-hidden="true" class="ti ti-shopping-cart"></i></span><span class="txt-largo">Registrar venta</span><span class="txt-corto">Vender</span>
             </a>
             <form data-astro-reload action="/logout" method="post"><button type="submit">Salir</button></form>

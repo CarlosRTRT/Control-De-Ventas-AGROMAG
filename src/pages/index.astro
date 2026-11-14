@@ -4,6 +4,7 @@ import { ClientRouter } from 'astro:transitions';
 import { randomBytes } from 'node:crypto';
 import { db, crc, TOKEN_RE, METODOS } from '../lib/db';
 import { negocio } from '../lib/negocio';
+import { VERSION } from '../lib/version';
 import Comprobante from '../components/Comprobante.astro';
 import { cargarComprobante, numeroDe } from '../lib/comprobante';
 
@@ -97,6 +98,7 @@ const ok = Astro.url.searchParams.has('ok');
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="version" content={VERSION} />
     <title>Reportar venta · Agromag Control de Ventas</title>
     <ClientRouter />
     {comprobante && <style set:html={`@page { size: ${ancho}mm auto; margin: 0; }`} />}

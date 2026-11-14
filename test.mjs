@@ -439,7 +439,13 @@ try {
     const comoEmp = await (await fetch(B + '/stock', { headers: { cookie: emp } })).json();
     const conejoBd = sesiones.prepare("select id, cantidad from animales where tipo = 'Conejo'").get();
     assert.equal(comoEmp.find(f => f.id === conejoBd.id).cantidad, conejoBd.cantidad); // refleja la base al instante
+    // Versión: las páginas la llevan en un <meta> y /stock la devuelve en x-version; si coinciden, no hace falta recargar
+    const versionH = (await fetch(B + '/stock', { headers: { cookie: emp } })).headers.get('x-version');
+    assert.match(versionH, /^[a-z0-9]+$/);
+    const meta = (html, que) => assert.match(html, new RegExp('<meta name="version" content="' + versionH + '"'), que);
+    meta(await fetch(B + '/', { headers: { cookie: emp } }).then(r => r.text()), 'la página de ventas debe llevar la versión');
     const adminS = await login('clave123');
+    meta(await fetch(B + '/admin', { headers: { cookie: adminS } }).then(r => r.text()), 'el panel debe llevar la versión');
     assert.equal((await fetch(B + '/stock', { headers: { cookie: adminS } })).status, 200);
     sesiones.prepare("update sesiones set expira = datetime('now','+5 minutes')").run();
     await fetch(B + '/stock', { headers: { cookie: adminS } });

@@ -1,12 +1,18 @@
 // Mantiene al día las cantidades en pantalla (cada 2 s, solo con la pestaña a la vista), sin recargar ni borrar lo escrito.
+// Si el sistema se actualizó (cambió x-version), recarga la página solo cuando la persona no ha empezado a llenar nada;
+// si ya empezó, espera: la versión nueva le llega al registrar (la página se vuelve a cargar).
 const CADA = 2000;
 let temporizador: number | undefined;
+let tocado = false;
+for (const ev of ["input", "change"]) document.addEventListener(ev, e => { if (e.isTrusted) tocado = true; }, true); // los eventos de este script no cuentan
 
 async function actualizar() {
   let filas: { id: number; cantidad: number }[];
   try {
     const r = await fetch('/stock', { headers: { accept: 'application/json' } });
     if (!r.ok) return; // sesión vencida o sin red: se reintenta en el próximo ciclo
+    const nueva = r.headers.get('x-version'), mia = document.querySelector<HTMLMetaElement>('meta[name=version]')?.content;
+    if (nueva && mia && nueva !== mia && !tocado) { location.reload(); return; }
     filas = await r.json();
   } catch { return; }
   const cant = new Map(filas.map(f => [String(f.id), f.cantidad]));
@@ -36,6 +42,7 @@ async function actualizar() {
 
 document.addEventListener('astro:page-load', () => {
   clearInterval(temporizador);
+  tocado = false;
   if (!document.querySelector('#lineas, form.animal-row-existing')) return;
   temporizador = window.setInterval(() => { if (!document.hidden) actualizar(); }, CADA);
 });

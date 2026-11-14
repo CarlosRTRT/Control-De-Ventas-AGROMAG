@@ -1,6 +1,6 @@
 ---
 // Tabla de ventas del dueño (panel e historial). En computador es una tabla; en celular cada venta es una tarjeta.
-import { crc } from '../lib/db';
+import { crc, METODOS } from '../lib/db';
 import { numeroDe } from '../lib/comprobante';
 
 interface Props { ventas: any[]; hayFactura: boolean; soloHora?: boolean }
@@ -26,7 +26,7 @@ const tipoDe = (v: any) => (v.clase === 'servicio' ? 'Servicio' : v.clase === 'p
         <td class:list={['c-cant', 'num', { 'sin-cant': v.origen === 's' }]}>{v.origen === 's' ? '—' : v.cantidad}</td>
         <td class:list={['c-precio', 'num', { 'sin-cant': v.origen === 's' }]}>{crc(v.precio_unit)}</td>
         <td class="c-total num fuerte">{crc(v.cantidad * v.precio_unit)}</td>
-        <td class="c-metodo"><span class:list={['metodo', v.metodo]}>{v.metodo === 'sinpe' ? 'SINPE' : 'Tarjeta'}</span></td>
+        <td class="c-metodo"><span class:list={['metodo', v.metodo]}>{METODOS[v.metodo]}</span></td>
         {hayFactura && (
           <td class="c-fact">{v.factura ? <a class="factura" href={`/factura/${v.factura}`} target="_blank">Ver <i aria-hidden="true" class="ti ti-arrow-up-right"></i></a> : <span class="sin-factura">—</span>}</td>
         )}
@@ -48,6 +48,7 @@ const tipoDe = (v: any) => (v.clase === 'servicio' ? 'Servicio' : v.clase === 'p
   .metodo { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
   .metodo.sinpe { background: #e8f0fb; color: #2b5a99; }
   .metodo.tarjeta { background: #f1ecf8; color: #634594; }
+  .metodo.efectivo { background: #e6f2e9; color: #2a6a3f; }
   .clase { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #eef2ef; color: #4d5f54; }
   .clase.producto { background: #e5f0f6; color: #2d5b7a; }
   .clase.servicio { background: #fdf1dc; color: #8a5a12; }

@@ -1,6 +1,6 @@
 ---
 import AdminLayout from '../layouts/AdminLayout.astro';
-import { db, crc, MOVIMIENTOS_SQL } from '../lib/db';
+import { db, crc, METODOS, MOVIMIENTOS_SQL } from '../lib/db';
 import { cambiarCodigo, codigoLocal, nuevoCodigo } from '../lib/acceso';
 import TablaVentas from '../components/TablaVentas.astro';
 
@@ -110,12 +110,13 @@ const hayFactura = ventas.some((v: any) => v.factura); // la columna solo aparec
 const codigo = codigoLocal();
 const ultimo = (origen: string) => Math.max(0, ...ventas.filter(v => v.origen === origen).map(v => v.id));
 
-let total = 0, sinpe = 0, tarjeta = 0;
+let total = 0;
+const porMetodo: Record<string, number> = Object.fromEntries(Object.keys(METODOS).map(m => [m, 0]));
 const porEmpleado: Record<string, number> = {};
 for (const v of ventas) {
   const t = v.cantidad * v.precio_unit;
   total += t;
-  if (v.metodo === 'sinpe') sinpe += t; else tarjeta += t;
+  porMetodo[v.metodo] += t;
   porEmpleado[v.nombre] = (porEmpleado[v.nombre] || 0) + t;
 }
 ---
@@ -137,7 +138,7 @@ for (const v of ventas) {
         <div class="sales-empty-copy">
           <p class="resumen">
             <b>{cuentaVentas} venta{cuentaVentas > 1 && 's'}</b> por <b class="total-por-cerrar">{crc(total)}</b>
-            <span class="sep">·</span> SINPE {crc(sinpe)} <span class="sep">·</span> Tarjeta {crc(tarjeta)}
+            {Object.entries(METODOS).map(([m, n]) => <><span class="sep">·</span> {n} {crc(porMetodo[m])} </>)}
           </p>
           <p class="por-empleado">
             {Object.entries(porEmpleado).map(([n, t], i) => <>{i > 0 && <span class="sep">·</span>}{n} {crc(t)} </>)}

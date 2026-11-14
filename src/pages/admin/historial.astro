@@ -1,6 +1,6 @@
 ---
 import AdminLayout from '../../layouts/AdminLayout.astro';
-import { db, hoy, crc, MOVIMIENTOS_SQL } from '../../lib/db';
+import { db, hoy, crc, METODOS, MOVIMIENTOS_SQL } from '../../lib/db';
 import { tokenPorNumero } from '../../lib/comprobante';
 import TablaVentas from '../../components/TablaVentas.astro';
 
@@ -27,12 +27,13 @@ const pendientes = ventas.filter(v => !v.cierre).length;
 const titulo = new Date(dia + 'T12:00:00').toLocaleDateString('es-CR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 const esHoy = dia === hoy();
 
-let total = 0, sinpe = 0, tarjeta = 0;
+let total = 0;
+const porMetodo: Record<string, number> = Object.fromEntries(Object.keys(METODOS).map(m => [m, 0]));
 const porEmpleado: Record<string, number> = {};
 for (const v of ventas) {
   const t = v.cantidad * v.precio_unit;
   total += t;
-  if (v.metodo === 'sinpe') sinpe += t; else tarjeta += t;
+  porMetodo[v.metodo] += t;
   porEmpleado[v.nombre] = (porEmpleado[v.nombre] || 0) + t;
 }
 ---
@@ -60,7 +61,7 @@ for (const v of ventas) {
       <div class="sales-empty-copy">
         <p>
           <b>{cuentaVentas} venta{cuentaVentas > 1 && 's'}</b> por <b>{crc(total)}</b>
-          <span class="sep">·</span> SINPE {crc(sinpe)} <span class="sep">·</span> Tarjeta {crc(tarjeta)}
+          {Object.entries(METODOS).map(([m, n]) => <><span class="sep">·</span> {n} {crc(porMetodo[m])} </>)}
         </p>
         <p class="por-empleado">
           {Object.entries(porEmpleado).map(([n, t], i) => <>{i > 0 && <span class="sep">·</span>}{n} {crc(t)} </>)}

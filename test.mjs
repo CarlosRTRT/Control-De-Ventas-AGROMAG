@@ -182,6 +182,21 @@ try {
     assert.match(soloG, /Tarjeta/);
     assert.match(soloG, /size: 58mm auto/);
 
+    // Pago en efectivo: se guarda, sale en el comprobante y cuenta aparte en los totales
+    const tokenE = hex + '5';
+    assert.match(await venta2({ token: tokenE, animal: '', servicio: '1', metodo: 'efectivo' }), new RegExp('recibo=' + tokenE));
+    const efe = await ver('?recibo=' + tokenE);
+    assert.match(efe, /Pago:<\/span><span[^>]*>Efectivo/);
+    const { DatabaseSync: BdE } = await import('node:sqlite');
+    assert.equal(new BdE(path.join(dir, 'ventas.db')).prepare('select metodo from servicios where token = ?').get(tokenE).metodo, 'efectivo');
+    assert.match(await venta2({ animal: '', servicio: '1', metodo: 'bitcoin' }), /Elija el método de pago/); // un método desconocido se rechaza
+    assert.match(await venta2({ animal: '', servicio: '1', metodo: '' }), /Elija el método de pago/);
+    assert.match(await venta2({ animal: '', servicio: '1', metodo: 'toString' }), /Elija el método de pago/);
+    const panelE = await fetch(B + '/admin', { headers: { cookie: admin } }).then(r => r.text());
+    assert.match(panelE, /Efectivo\s*(<!--.*?-->)?\s*₡8[.,\s  ]000/); // solo el servicio de ₡8 000 pagó en efectivo
+    assert.match(panelE, /class="metodo efectivo"[^>]*>Efectivo/);
+    assert.match(await ver(), /value="efectivo"/); // el formulario ofrece la opción
+
     // Códigos desconocidos o inválidos: se muestra el formulario normal
     for (const mal of ['c'.repeat(32), 'abc', '..%2Fetc']) {
       const h = await ver('?recibo=' + mal);

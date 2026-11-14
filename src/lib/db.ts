@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS ventas (
   id INTEGER PRIMARY KEY, fecha TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   empleado_id INTEGER NOT NULL REFERENCES empleados, animal_id INTEGER NOT NULL REFERENCES animales,
   cantidad INTEGER NOT NULL CHECK (cantidad > 0), precio_unit INTEGER NOT NULL,
-  metodo TEXT NOT NULL CHECK (metodo IN ('sinpe','tarjeta')), factura TEXT,
+  metodo TEXT NOT NULL CHECK (metodo IN ('sinpe','tarjeta','efectivo')), factura TEXT,
   cierre TEXT, -- NULL = venta del día aún sin cerrar
   token TEXT); -- código único del formulario: evita registrar dos veces la misma venta
 CREATE INDEX IF NOT EXISTS ventas_fecha ON ventas (fecha);
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS catalogo_servicios ( -- servicios que el dueño ofrec
 CREATE TABLE IF NOT EXISTS servicios ( -- servicios vendidos: lo que se cobró, sin inventario
   id INTEGER PRIMARY KEY, fecha TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   empleado_id INTEGER NOT NULL REFERENCES empleados, monto INTEGER NOT NULL CHECK (monto > 0),
-  metodo TEXT NOT NULL CHECK (metodo IN ('sinpe','tarjeta')), cierre TEXT, token TEXT, nombre TEXT);
+  metodo TEXT NOT NULL CHECK (metodo IN ('sinpe','tarjeta','efectivo')), cierre TEXT, token TEXT, nombre TEXT);
 -- Una venta con varios servicios deja una fila por servicio con el mismo código.
 DROP INDEX IF EXISTS servicios_token;
 CREATE INDEX IF NOT EXISTS servicios_token_idx ON servicios (token);
@@ -57,6 +57,39 @@ if (!db.prepare("SELECT 1 FROM pragma_table_info('animales') WHERE name = 'clase
   db.exec("ALTER TABLE animales ADD COLUMN clase TEXT NOT NULL DEFAULT 'animal'");
 if (!db.prepare("SELECT 1 FROM pragma_table_info('servicios') WHERE name = 'nombre'").get())
   db.exec('ALTER TABLE servicios ADD COLUMN nombre TEXT');
+
+// Bases anteriores al pago en efectivo: SQLite no permite cambiar un CHECK, así que esas tablas se reconstruyen con las mismas filas.
+// Antes se guarda una copia de la base (ventas.db.antes-efectivo); si algo falla, se deshace todo y el sistema no arranca a medias.
+const sinEfectivo = (t: string) => String((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(t) as any)?.sql ?? '').includes("'sinpe','tarjeta')");
+const reconstruir = ['ventas', 'servicios'].filter(sinEfectivo);
+if (reconstruir.length) {
+  const copia = path.join(DATA_DIR, 'ventas.db.antes-efectivo');
+  if (!fs.existsSync(copia)) db.exec(`VACUUM INTO '${copia.replace(/'/g, "''")}'`);
+  db.exec('PRAGMA foreign_keys = OFF'); // no puede cambiarse dentro de una transacción
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    for (const t of reconstruir) {
+      const sql = String((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(t) as any).sql);
+      db.exec(`DROP TABLE IF EXISTS ${t}_nueva`);
+      db.exec(sql.replace(/^CREATE TABLE (IF NOT EXISTS )?"?\w+"?/i, `CREATE TABLE ${t}_nueva`).replace("'sinpe','tarjeta')", "'sinpe','tarjeta','efectivo')"));
+      db.exec(`INSERT INTO ${t}_nueva SELECT * FROM ${t}`);
+      const antes = (db.prepare(`SELECT count(*) n FROM ${t}`).get() as any).n, despues = (db.prepare(`SELECT count(*) n FROM ${t}_nueva`).get() as any).n;
+      if (antes !== despues) throw new Error(`Migración de ${t}: ${antes} filas antes y ${despues} después`);
+      db.exec(`DROP TABLE ${t}`);
+      db.exec(`ALTER TABLE ${t}_nueva RENAME TO ${t}`);
+    }
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS ventas_fecha ON ventas (fecha);
+      CREATE INDEX IF NOT EXISTS ventas_token_idx ON ventas (token);
+      CREATE INDEX IF NOT EXISTS servicios_token_idx ON servicios (token);`);
+    if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Migración: quedaron referencias rotas');
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  finally { db.exec('PRAGMA foreign_keys = ON'); }
+}
+
+// Métodos de pago: lo que se guarda -> lo que se muestra.
+export const METODOS: Record<string, string> = { sinpe: 'SINPE', tarjeta: 'Tarjeta', efectivo: 'Efectivo' };
 
 // Compara el PIN del dueño en tiempo constante.
 export const pinCorrecto = (pin: string) => {

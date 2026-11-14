@@ -9,7 +9,7 @@
     "dev": "astro dev",
     "build": "astro build",
     "start": "node dist/server/entry.mjs",
-    "test": "node test.mjs"
+    "test": "node test.mjs && node test-migracion.mjs"
   },
   "dependencies": {
     "@astrojs/node": "^11.1.6",

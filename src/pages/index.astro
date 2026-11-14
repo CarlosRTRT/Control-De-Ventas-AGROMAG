@@ -2,7 +2,7 @@
 import '../styles/transiciones.css';
 import { ClientRouter } from 'astro:transitions';
 import { randomBytes } from 'node:crypto';
-import { db, crc, TOKEN_RE } from '../lib/db';
+import { db, crc, TOKEN_RE, METODOS } from '../lib/db';
 import { negocio } from '../lib/negocio';
 import Comprobante from '../components/Comprobante.astro';
 import { cargarComprobante, numeroDe } from '../lib/comprobante';
@@ -29,7 +29,7 @@ if (Astro.request.method === 'POST') {
   if (!pedidos.size && !elegidos.length) return back('Elija un animal, un producto o un servicio');
   if (cantidadMala) return back('Cantidad inválida');
   if (elegidos.some(s => !s)) return back('Uno de los servicios ya no está disponible');
-  if (metodo !== 'sinpe' && metodo !== 'tarjeta') return back('Elija SINPE o tarjeta');
+  if (!Object.hasOwn(METODOS, metodo)) return back('Elija el método de pago');
   // Todo síncrono desde aquí: ninguna otra petición se intercala en la transacción.
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -160,7 +160,7 @@ const ok = Astro.url.searchParams.has('ok');
                     <div class="entrada-info">
                       <span class="entrada-hora">{h.fecha.slice(11, 16)} · N° {numeroDe(h.token)}</span>
                       <strong>{h.partes.join(' + ')}</strong>
-                      <span class="entrada-sub">{h.nombre} · {h.metodo === 'sinpe' ? 'SINPE' : 'Tarjeta'}</span>
+                      <span class="entrada-sub">{h.nombre} · {METODOS[h.metodo]}</span>
                     </div>
                     <span class="entrada-total">{crc(h.total)}</span>
                     <div class="entrada-acciones">
@@ -259,6 +259,7 @@ const ok = Astro.url.searchParams.has('ok');
                     <legend class="sr-only">Método de pago</legend>
                     <label class="payment-choice"><input name="metodo" required type="radio" value="sinpe" /><span>SINPE</span></label>
                     <label class="payment-choice"><input name="metodo" type="radio" value="tarjeta" /><span>Tarjeta</span></label>
+                    <label class="payment-choice"><input name="metodo" type="radio" value="efectivo" /><span>Efectivo</span></label>
                   </fieldset>
                 </div>
 
@@ -503,8 +504,8 @@ const ok = Astro.url.searchParams.has('ok');
     .grooming-area { padding: 21px 19px; border-left: 0; border-top: 1px solid var(--line); }
     .grooming-toggle { min-height: 48px; font-size: 16px; }
     .payment-row { grid-template-columns: 1fr; gap: 12px; padding: 22px 19px; }
-    .payment-row fieldset { gap: 4px; }
-    .payment-choice { min-width: 0; flex: 1; }
+    .payment-row fieldset { gap: 4px; flex-wrap: wrap; }
+    .payment-choice { min-width: 0; flex: 1 1 140px; }
     .cash-footer { align-items: stretch; flex-direction: column; padding: 18px 19px 20px; }
     .cash-submit { width: 100%; min-width: 0; min-height: 56px; }
     .entrada { grid-template-columns: minmax(0, 1fr) auto; padding: 16px 18px; }

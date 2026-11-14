@@ -1,5 +1,5 @@
 ---
-import { crc } from '../lib/db';
+import { crc, METODOS } from '../lib/db';
 import { negocio } from '../lib/negocio';
 
 // Hoja del comprobante, tal como sale en la impresora térmica. La usan la vista del empleado y la del dueño.
@@ -27,7 +27,7 @@ const { datos, ancho } = Astro.props;
   ))}
   <hr class="sep" />
   <p class="fila total"><span>TOTAL</span><span>{crc(datos.total)}</span></p>
-  <p class="fila"><span>Pago:</span><span>{datos.metodo === 'sinpe' ? 'SINPE Móvil' : 'Tarjeta'}</span></p>
+  <p class="fila"><span>Pago:</span><span>{datos.metodo === 'sinpe' ? 'SINPE Móvil' : METODOS[datos.metodo]}</span></p>
   <hr class="sep" />
   {negocio.pie && <p class="centro">{negocio.pie}</p>}
 </article>
